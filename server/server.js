@@ -428,6 +428,16 @@ app.put('/api/tasks/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Update task status only (for mobile app quick status changes)
+app.put('/api/tasks/:id/status', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.updateTask({ status: req.body.status, id: parseInt(req.params.id) }, req.user.id, req.user.role);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.json({ success: false, error: error.message, code: error.code });
+  }
+});
+
 app.delete('/api/tasks/:id', authenticateToken, async (req, res) => {
   try {
     await db.deleteTask(parseInt(req.params.id), req.user.id, req.user.role);
