@@ -1245,8 +1245,12 @@ class Database {
     );
   }
 
-  async getAllSubordinatesHierarchy(managerId) {
+  async getAllSubordinatesHierarchy(managerId, level = 0, visited = new Set()) {
     await this.initialize();
+    
+    // Prevent infinite loops
+    if (visited.has(managerId)) return [];
+    visited.add(managerId);
     
     const directSubordinates = await this.query(
       'SELECT id, username, full_name, role, manager_id FROM users WHERE manager_id = $1 AND active = 1',
@@ -1270,12 +1274,20 @@ class Database {
         [sub.id]
       );
       
+      const hasSubordinates = parseInt(hasSubordinatesResult[0].count) > 0;
+      
       result.push({
         ...sub,
         task_stats: stats[0] || { total_tasks: 0, pending: 0, in_progress: 0, completed: 0, overdue: 0 },
-        has_subordinates: parseInt(hasSubordinatesResult[0].count) > 0,
-        level: 0
+        has_subordinates: hasSubordinates,
+        level: level
       });
+      
+      // Recursively get all subordinates of this user
+      if (hasSubordinates) {
+        const subSubordinates = await this.getAllSubordinatesHierarchy(sub.id, level + 1, visited);
+        result.push(...subSubordinates);
+      }
     }
     
     return result;
