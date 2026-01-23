@@ -416,6 +416,7 @@ class Database {
   async getOrCreateStoreGroup(name, code = '') {
     await this.initialize();
     const trimmedName = String(name).trim();
+    console.log('[DB] getOrCreateStoreGroup - looking for:', trimmedName);
     
     const existing = await this.query(
       'SELECT id FROM store_groups WHERE LOWER(name) = LOWER($1)',
@@ -423,14 +424,17 @@ class Database {
     );
     
     if (existing.length > 0) {
+      console.log('[DB] Store group exists with id:', existing[0].id);
       return { id: existing[0].id, created: false };
     }
     
+    console.log('[DB] Creating new store group:', trimmedName, 'code:', code);
     const result = await this.pool.query(
       'INSERT INTO store_groups (name, code) VALUES ($1, $2) RETURNING id',
       [trimmedName, code]
     );
     
+    console.log('[DB] Store group created with id:', result.rows[0].id);
     return { id: result.rows[0].id, created: true };
   }
 
@@ -468,6 +472,7 @@ class Database {
   async getOrCreateBrand(name) {
     await this.initialize();
     const trimmedName = String(name).trim();
+    console.log('[DB] getOrCreateBrand - looking for:', trimmedName);
     
     const existing = await this.query(
       'SELECT id FROM brands WHERE LOWER(name) = LOWER($1)',
@@ -475,14 +480,17 @@ class Database {
     );
     
     if (existing.length > 0) {
+      console.log('[DB] Brand exists with id:', existing[0].id);
       return { id: existing[0].id, created: false };
     }
     
+    console.log('[DB] Creating new brand:', trimmedName);
     const result = await this.pool.query(
       'INSERT INTO brands (name) VALUES ($1) RETURNING id',
       [trimmedName]
     );
     
+    console.log('[DB] Brand created with id:', result.rows[0].id);
     return { id: result.rows[0].id, created: true };
   }
 
@@ -534,10 +542,31 @@ class Database {
   // ========== SNAPSHOTS ==========
   async addSnapshot(data, userId = null) {
     await this.initialize();
-    await this.execute(
-      'INSERT INTO stock_snapshot (store_id, product_id, date, qty, expiry_date, price, competitor_prices, note, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-      [data.store_id, data.product_id, data.date, data.qty || 0, data.expiry_date || null, data.price || 0, data.competitor_prices || null, data.note || null, userId]
+    
+    // Check if snapshot already exists for this store/product/date
+    const existing = await this.query(
+      'SELECT id FROM stock_snapshot WHERE store_id = $1 AND product_id = $2 AND date = $3',
+      [data.store_id, data.product_id, data.date]
     );
+    
+    if (existing.length > 0) {
+      // Update existing snapshot (overwrite)
+      await this.execute(
+        `UPDATE stock_snapshot 
+         SET qty = $1, expiry_date = $2, price = $3, competitor_prices = $4, note = $5, user_id = $6
+         WHERE store_id = $7 AND product_id = $8 AND date = $9`,
+        [data.qty || 0, data.expiry_date || null, data.price || 0, data.competitor_prices || null, data.note || null, userId, data.store_id, data.product_id, data.date]
+      );
+      console.log(`[Snapshot] Updated existing snapshot for store ${data.store_id}, product ${data.product_id}, date ${data.date}`);
+    } else {
+      // Insert new snapshot
+      await this.execute(
+        'INSERT INTO stock_snapshot (store_id, product_id, date, qty, expiry_date, price, competitor_prices, note, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+        [data.store_id, data.product_id, data.date, data.qty || 0, data.expiry_date || null, data.price || 0, data.competitor_prices || null, data.note || null, userId]
+      );
+      console.log(`[Snapshot] Created new snapshot for store ${data.store_id}, product ${data.product_id}, date ${data.date}`);
+    }
+    
     return { success: true };
   }
 
@@ -1646,6 +1675,29 @@ class Database {
 
   async getRouteSchedules(userId = null) {
     await this.initialize();
+    
+    // Calculate dates for NEXT 7 days starting from TODAY
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayDayOfWeek = today.getDay();
+    
+    console.log('[getRouteSchedules] Today:', today.toISOString().split('T')[0], 'Day of week:', todayDayOfWeek);
+    
+    // Map each day_of_week to its next occurrence (today or future only)
+    // If a day already passed this week, use next week's occurrence
+    const dayDates = {};
+    for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) {
+      // Calculate days until this day_of_week
+      let daysUntil = (dayOfWeek - todayDayOfWeek + 7) % 7;
+      // If daysUntil is 0, it means today - which is fine, keep it as 0
+      
+      const d = new Date(today);
+      d.setDate(today.getDate() + daysUntil);
+      dayDates[dayOfWeek] = d.toISOString().split('T')[0];
+    }
+    
+    console.log('[getRouteSchedules] Day dates mapping:', dayDates);
+    
     let sql = `
       SELECT rs.*, u.full_name as user_name, u.username, s.name as store_name, s.code as store_code,
              cb.full_name as created_by_name
@@ -1662,7 +1714,31 @@ class Database {
     }
     
     sql += ' ORDER BY rs.user_id, rs.day_of_week, s.name';
-    return this.query(sql, params);
+    const schedules = await this.query(sql, params);
+    
+    // Add visit completion status for current week
+    const result = [];
+    for (const schedule of schedules) {
+      const dateForDay = dayDates[schedule.day_of_week];
+      console.log(`[getRouteSchedules] Schedule ${schedule.id}: day_of_week=${schedule.day_of_week}, dateForDay=${dateForDay}`);
+      
+      const visitLog = await this.query(
+        'SELECT id, is_completed, completed_at FROM visit_logs WHERE route_schedule_id = $1 AND visit_date = $2',
+        [schedule.id, dateForDay]
+      );
+      
+      console.log(`[getRouteSchedules] Schedule ${schedule.id}: visitLog found:`, visitLog.length > 0 ? visitLog[0] : 'none');
+      
+      result.push({
+        ...schedule,
+        visit_log_id: visitLog[0]?.id || null,
+        is_completed: visitLog[0]?.is_completed || 0,
+        visit_date: dateForDay,
+        completed_at: visitLog[0]?.completed_at || null
+      });
+    }
+    
+    return result;
   }
 
   async getRouteSchedulesByDay(dayOfWeek, userId = null) {
@@ -1700,15 +1776,16 @@ class Database {
     await this.initialize();
     
     const today = new Date();
-    const dayOfWeek = today.getDay();
-    const weekStart = new Date(today);
-    weekStart.setDate(today.getDate() - dayOfWeek);
     
+    // Create a 7-day rolling window starting from today
     const dayDates = [];
     for (let i = 0; i < 7; i++) {
-      const d = new Date(weekStart);
-      d.setDate(weekStart.getDate() + i);
-      dayDates.push(d.toISOString().split('T')[0]);
+      const d = new Date(today);
+      d.setDate(today.getDate() + i);
+      dayDates.push({
+        date: d.toISOString().split('T')[0],
+        dayOfWeek: d.getDay()
+      });
     }
     
     const schedules = await this.query(`
@@ -1720,20 +1797,25 @@ class Database {
     `, [userId]);
     
     const result = [];
-    for (const schedule of schedules) {
-      const dateForDay = dayDates[schedule.day_of_week];
-      const visitLog = await this.query(
-        'SELECT id, is_completed, completed_at FROM visit_logs WHERE route_schedule_id = $1 AND visit_date = $2',
-        [schedule.id, dateForDay]
-      );
+    // For each day in the next 7 days
+    for (const dayInfo of dayDates) {
+      // Find schedules that match this day of week
+      const matchingSchedules = schedules.filter(s => s.day_of_week === dayInfo.dayOfWeek);
       
-      result.push({
-        ...schedule,
-        visit_log_id: visitLog[0]?.id || null,
-        is_completed: visitLog[0]?.is_completed || 0,
-        visit_date: dateForDay,
-        completed_at: visitLog[0]?.completed_at || null
-      });
+      for (const schedule of matchingSchedules) {
+        const visitLog = await this.query(
+          'SELECT id, is_completed, completed_at FROM visit_logs WHERE route_schedule_id = $1 AND visit_date = $2',
+          [schedule.id, dayInfo.date]
+        );
+        
+        result.push({
+          ...schedule,
+          visit_log_id: visitLog[0]?.id || null,
+          is_completed: visitLog[0]?.is_completed || 0,
+          visit_date: dayInfo.date,
+          completed_at: visitLog[0]?.completed_at || null
+        });
+      }
     }
     
     return result;
@@ -1772,30 +1854,52 @@ class Database {
   async markVisitCompleteFromSnapshot(storeId, userId, visitDate) {
     await this.initialize();
     
-    const dateObj = new Date(visitDate);
+    console.log(`[Route Mark] Marking visit for store ${storeId}, user ${userId}, date ${visitDate}`);
+    
+    // Parse the date correctly
+    const dateObj = new Date(visitDate + 'T00:00:00');
     const dayOfWeek = dateObj.getDay();
     
+    console.log(`[Route Mark] Parsed date: ${dateObj.toISOString()}, day of week: ${dayOfWeek}`);
+    
+    // First, get all schedules for this user and store to debug
+    const allSchedules = await this.query(
+      'SELECT id, day_of_week FROM route_schedules WHERE user_id = $1 AND store_id = $2',
+      [userId, storeId]
+    );
+    
+    console.log(`[Route Mark] All schedules for user ${userId} and store ${storeId}:`, allSchedules);
+    
     const schedule = await this.query(
-      'SELECT id FROM route_schedules WHERE user_id = $1 AND store_id = $2 AND day_of_week = $3',
+      'SELECT id, store_id FROM route_schedules WHERE user_id = $1 AND store_id = $2 AND day_of_week = $3',
       [userId, storeId, dayOfWeek]
     );
     
+    console.log(`[Route Mark] Matching schedule:`, schedule);
+    
     if (schedule.length === 0) {
+      console.log(`[Route Mark] No schedule found for user ${userId}, store ${storeId}, day ${dayOfWeek}`);
       return { success: true, noSchedule: true };
     }
     
     const routeScheduleId = schedule[0].id;
     
+    console.log(`[Route Mark] Found route schedule ID: ${routeScheduleId}`);
+    
+    // Delete any existing visit log for this schedule and date
     await this.execute(
       'DELETE FROM visit_logs WHERE route_schedule_id = $1 AND visit_date = $2',
       [routeScheduleId, visitDate]
     );
     
+    // Insert new completed visit log
     await this.execute(
       `INSERT INTO visit_logs (route_schedule_id, store_id, user_id, visit_date, is_completed, completed_at)
        VALUES ($1, $2, $3, $4, 1, CURRENT_TIMESTAMP)`,
       [routeScheduleId, storeId, userId, visitDate]
     );
+    
+    console.log(`[Route Mark] Visit marked as completed for route ${routeScheduleId}`);
     
     return { success: true, isCompleted: true };
   }
@@ -1957,7 +2061,11 @@ class Database {
           COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_tasks,
           COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_tasks,
           COUNT(CASE WHEN status = 'in_progress' THEN 1 END) as in_progress_tasks,
-          COUNT(CASE WHEN status = 'overdue' OR (status != 'completed' AND due_date < CURRENT_DATE) THEN 1 END) as overdue_tasks
+          COUNT(CASE WHEN status = 'overdue' OR (status != 'completed' AND due_date < CURRENT_DATE) THEN 1 END) as overdue_tasks,
+          COUNT(CASE WHEN status = 'completed' AND completed_at IS NOT NULL AND due_date IS NOT NULL 
+            AND DATE(completed_at) <= DATE(due_date) THEN 1 END) as completed_on_time,
+          COUNT(CASE WHEN status = 'completed' AND completed_at IS NOT NULL AND due_date IS NOT NULL 
+            AND DATE(completed_at) > DATE(due_date) THEN 1 END) as completed_late
         FROM tasks 
         WHERE assigned_to = $1
           AND ($2::date IS NULL OR created_at >= $2::date)
@@ -1985,14 +2093,14 @@ class Database {
       `, [userId, startDate || null, endDate || null]);
 
       return {
-        tasks: taskStats[0] || { total_tasks: 0, completed_tasks: 0, pending_tasks: 0, in_progress_tasks: 0, overdue_tasks: 0 },
+        tasks: taskStats[0] || { total_tasks: 0, completed_tasks: 0, pending_tasks: 0, in_progress_tasks: 0, overdue_tasks: 0, completed_on_time: 0, completed_late: 0 },
         visits: visitStats[0] || { total_visits: 0, completed_visits: 0 },
         snapshots: parseInt(snapshotStats[0]?.total_snapshots || 0)
       };
     } catch (error) {
       console.error('getUserKPIStats error:', error);
       return {
-        tasks: { total_tasks: 0, completed_tasks: 0, pending_tasks: 0, in_progress_tasks: 0, overdue_tasks: 0 },
+        tasks: { total_tasks: 0, completed_tasks: 0, pending_tasks: 0, in_progress_tasks: 0, overdue_tasks: 0, completed_on_time: 0, completed_late: 0 },
         visits: { total_visits: 0, completed_visits: 0 },
         snapshots: 0
       };
@@ -2007,40 +2115,66 @@ class Database {
         SELECT 
           COUNT(*) as total_assigned,
           COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed,
-          COUNT(CASE WHEN status = 'completed' AND completed_at <= due_date + INTERVAL '1 day' THEN 1 END) as completed_on_time,
+          COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+          COUNT(CASE WHEN status = 'in_progress' THEN 1 END) as in_progress,
+          COUNT(CASE WHEN status = 'completed' AND completed_at IS NOT NULL AND due_date IS NOT NULL 
+            AND DATE(completed_at) <= DATE(due_date) THEN 1 END) as completed_on_time,
           AVG(CASE WHEN status = 'completed' AND completed_at IS NOT NULL 
             THEN EXTRACT(EPOCH FROM (completed_at - created_at)) / 3600 
           END) as avg_completion_hours,
           COUNT(CASE WHEN status != 'completed' AND due_date < CURRENT_DATE THEN 1 END) as overdue
         FROM tasks
         WHERE assigned_to = $1
+          AND archived_at IS NULL
           AND ($2::date IS NULL OR created_at >= $2::date)
           AND ($3::date IS NULL OR created_at <= $3::date)
       `, [userId, startDate || null, endDate || null]);
 
       const stats = metrics[0] || {};
       
+      // Get weekly trend
+      const weeklyTrend = await this.query(`
+        SELECT 
+          TO_CHAR(DATE_TRUNC('week', created_at), 'IYYY-IW') as week,
+          COUNT(*) as total,
+          COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed
+        FROM tasks
+        WHERE assigned_to = $1
+          AND archived_at IS NULL
+          AND ($2::date IS NULL OR created_at >= $2::date)
+          AND ($3::date IS NULL OR created_at <= $3::date)
+        GROUP BY week
+        ORDER BY week DESC
+        LIMIT 8
+      `, [userId, startDate || null, endDate || null]);
+      
       return {
         total_assigned: parseInt(stats.total_assigned || 0),
         completed: parseInt(stats.completed || 0),
+        pending: parseInt(stats.pending || 0),
+        in_progress: parseInt(stats.in_progress || 0),
         completed_on_time: parseInt(stats.completed_on_time || 0),
         avg_completion_hours: parseFloat(stats.avg_completion_hours || 0).toFixed(1),
         overdue: parseInt(stats.overdue || 0),
         completion_rate: stats.total_assigned > 0 ? 
           ((parseInt(stats.completed || 0) / parseInt(stats.total_assigned)) * 100).toFixed(1) : 0,
         on_time_rate: stats.completed > 0 ?
-          ((parseInt(stats.completed_on_time || 0) / parseInt(stats.completed)) * 100).toFixed(1) : 0
+          ((parseInt(stats.completed_on_time || 0) / parseInt(stats.completed)) * 100).toFixed(1) : 0,
+        weekly_trend: weeklyTrend || []
       };
     } catch (error) {
       console.error('getTaskMetrics error:', error);
       return {
         total_assigned: 0,
         completed: 0,
+        pending: 0,
+        in_progress: 0,
         completed_on_time: 0,
         avg_completion_hours: 0,
         overdue: 0,
         completion_rate: 0,
-        on_time_rate: 0
+        on_time_rate: 0,
+        weekly_trend: []
       };
     }
   }
