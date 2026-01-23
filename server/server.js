@@ -328,6 +328,10 @@ app.post('/api/snapshots', authenticateToken, async (req, res) => {
 
 app.delete('/api/snapshots/:id', authenticateToken, async (req, res) => {
   try {
+    // Only admin and general_manager can delete snapshots
+    if (!['admin', 'general_manager'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, error: 'ليس لديك صلاحية لحذف هذا السجل' });
+    }
     await db.deleteSnapshot(parseInt(req.params.id));
     res.json({ success: true });
   } catch (error) {
@@ -472,7 +476,9 @@ app.get('/api/team/subordinates', authenticateToken, async (req, res) => {
 
 app.get('/api/team/hierarchy', authenticateToken, async (req, res) => {
   try {
-    const hierarchy = await db.getAllSubordinatesHierarchy(req.user.id);
+    // Use manager_id from query if provided, otherwise use current user's ID
+    const managerId = req.query.manager_id ? parseInt(req.query.manager_id) : req.user.id;
+    const hierarchy = await db.getAllSubordinatesHierarchy(managerId);
     res.json({ success: true, data: hierarchy });
   } catch (error) {
     res.json({ success: false, error: error.message });
@@ -692,6 +698,28 @@ app.get('/api/reports/competitors', authenticateToken, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const data = await db.getCompetitorsReport(startDate, endDate);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Reports visits - actual visit logs count by user
+app.get('/api/reports/visits', authenticateToken, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const data = await db.getVisitsReport(startDate, endDate);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Reports deliveries - actual delivery count by user
+app.get('/api/reports/deliveries', authenticateToken, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const data = await db.getDeliveriesReport(startDate, endDate);
     res.json({ success: true, data });
   } catch (error) {
     res.json({ success: false, error: error.message });

@@ -2033,6 +2033,58 @@ class Database {
     }
   }
 
+  // ========== REPORTS - Visits and Deliveries ==========
+  async getVisitsReport(startDate, endDate) {
+    await this.initialize();
+    
+    try {
+      const result = await this.query(`
+        SELECT 
+          vl.user_id,
+          u.full_name as employee_name,
+          u.username,
+          u.role,
+          COUNT(*) as total_visits,
+          COUNT(CASE WHEN vl.is_completed = 1 THEN 1 END) as completed_visits
+        FROM visit_logs vl
+        JOIN users u ON u.id = vl.user_id
+        WHERE vl.visit_date >= $1 AND vl.visit_date <= $2
+        GROUP BY vl.user_id, u.full_name, u.username, u.role
+        ORDER BY u.full_name
+      `, [startDate, endDate]);
+      
+      return result;
+    } catch (error) {
+      console.error('getVisitsReport error:', error);
+      return [];
+    }
+  }
+
+  async getDeliveriesReport(startDate, endDate) {
+    await this.initialize();
+    
+    try {
+      // Get deliveries with user info from snapshots (since snapshots are created by users)
+      const result = await this.query(`
+        SELECT 
+          d.store_id,
+          st.name as store_name,
+          COUNT(*) as delivery_count,
+          SUM(d.qty) as total_qty
+        FROM deliveries d
+        JOIN stores st ON st.id = d.store_id
+        WHERE d.date >= $1 AND d.date <= $2
+        GROUP BY d.store_id, st.name
+        ORDER BY st.name
+      `, [startDate, endDate]);
+      
+      return result;
+    } catch (error) {
+      console.error('getDeliveriesReport error:', error);
+      return [];
+    }
+  }
+
   // Graceful shutdown
   async close() {
     if (this.pool) {
