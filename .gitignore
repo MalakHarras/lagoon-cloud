@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Environment (secrets)
+.env
+.env.local
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Certificates (generated on server)
+certbot/

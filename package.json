@@ -1,0 +1,20 @@
+{
+  "name": "lagoon-server",
+  "version": "2.0.0",
+  "description": "Lagoon FMCG Field Sales Management - Server",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "migrate": "node scripts/migrate-to-postgres.js"
+  },
+  "author": "Lagoon",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.22.1",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.11.3"
+  }
+}
