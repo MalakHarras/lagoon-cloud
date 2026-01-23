@@ -1775,18 +1775,28 @@ class Database {
   async getUserWeeklyScheduleWithVisits(userId) {
     await this.initialize();
     
-    const today = new Date();
+    // Use Cairo timezone for date calculations
+    const cairoOffset = 2 * 60 * 60 * 1000; // UTC+2
+    const nowUTC = new Date();
+    const nowCairo = new Date(nowUTC.getTime() + cairoOffset);
     
-    // Create a 7-day rolling window starting from today
+    // Get today's date in Cairo timezone (YYYY-MM-DD format)
+    const todayStr = nowCairo.toISOString().split('T')[0];
+    const todayDayOfWeek = nowCairo.getUTCDay();
+    
+    // Create a 7-day rolling window starting from today (Cairo time)
     const dayDates = [];
     for (let i = 0; i < 7; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() + i);
+      const d = new Date(nowCairo);
+      d.setUTCDate(nowCairo.getUTCDate() + i);
       dayDates.push({
         date: d.toISOString().split('T')[0],
-        dayOfWeek: d.getDay()
+        dayOfWeek: d.getUTCDay()
       });
     }
+    
+    console.log('[getUserWeeklyScheduleWithVisits] Cairo today:', todayStr, 'dayOfWeek:', todayDayOfWeek);
+    console.log('[getUserWeeklyScheduleWithVisits] Date range:', dayDates.map(d => d.date));
     
     const schedules = await this.query(`
       SELECT rs.*, s.name as store_name, s.code as store_code
