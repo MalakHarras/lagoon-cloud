@@ -1926,9 +1926,21 @@ class Database {
   async getMonthlyVisitCount(userId) {
     await this.initialize();
     
-    const today = new Date();
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
-    const monthEnd = today.toISOString().split('T')[0];
+    // Use Cairo timezone for date calculations
+    const cairoOffset = 2 * 60 * 60 * 1000; // UTC+2
+    const nowUTC = new Date();
+    const nowCairo = new Date(nowUTC.getTime() + cairoOffset);
+    
+    // Get first day of current month in Cairo timezone
+    const monthStartCairo = new Date(nowCairo);
+    monthStartCairo.setUTCDate(1);
+    monthStartCairo.setUTCHours(0, 0, 0, 0);
+    const monthStart = monthStartCairo.toISOString().split('T')[0];
+    
+    // Get today in Cairo timezone
+    const monthEnd = nowCairo.toISOString().split('T')[0];
+    
+    console.log(`[getMonthlyVisitCount] User ${userId}: Month range ${monthStart} to ${monthEnd}`);
     
     const result = await this.query(`
       SELECT COUNT(*) as count
@@ -1936,7 +1948,10 @@ class Database {
       WHERE user_id = $1 AND is_completed = 1 AND visit_date >= $2 AND visit_date <= $3
     `, [userId, monthStart, monthEnd]);
     
-    return parseInt(result[0]?.count) || 0;
+    const count = parseInt(result[0]?.count) || 0;
+    console.log(`[getMonthlyVisitCount] User ${userId}: ${count} completed visits this month`);
+    
+    return count;
   }
 
   async getMonthlyVisitCountForUsers(userIds) {
@@ -1944,9 +1959,19 @@ class Database {
     
     if (!userIds || userIds.length === 0) return {};
     
-    const today = new Date();
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
-    const monthEnd = today.toISOString().split('T')[0];
+    // Use Cairo timezone for date calculations
+    const cairoOffset = 2 * 60 * 60 * 1000; // UTC+2
+    const nowUTC = new Date();
+    const nowCairo = new Date(nowUTC.getTime() + cairoOffset);
+    
+    // Get first day of current month in Cairo timezone
+    const monthStartCairo = new Date(nowCairo);
+    monthStartCairo.setUTCDate(1);
+    monthStartCairo.setUTCHours(0, 0, 0, 0);
+    const monthStart = monthStartCairo.toISOString().split('T')[0];
+    
+    // Get today in Cairo timezone
+    const monthEnd = nowCairo.toISOString().split('T')[0];
     
     const placeholders = userIds.map((_, i) => `$${i + 1}`).join(',');
     const results = await this.query(`
