@@ -1274,6 +1274,45 @@ class Database {
     );
   }
 
+  async getDirectSubordinatesOnly(managerId) {
+    await this.initialize();
+    
+    const directSubordinates = await this.query(
+      'SELECT id, username, full_name, role, manager_id FROM users WHERE manager_id = $1 AND active = 1',
+      [managerId]
+    );
+    
+    const result = [];
+    for (const sub of directSubordinates) {
+      const stats = await this.query(`
+        SELECT 
+          COUNT(*) as total_tasks,
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+          SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+          SUM(CASE WHEN status NOT IN ('completed', 'cancelled') AND due_date < CURRENT_DATE THEN 1 ELSE 0 END) as overdue
+        FROM tasks WHERE assigned_to = $1
+      `, [sub.id]);
+      
+      const hasSubordinatesResult = await this.query(
+        'SELECT COUNT(*) as count FROM users WHERE manager_id = $1 AND active = 1',
+        [sub.id]
+      );
+      
+      const hasSubordinates = parseInt(hasSubordinatesResult[0].count) > 0;
+      
+      result.push({
+        ...sub,
+        task_stats: stats[0] || { total_tasks: 0, pending: 0, in_progress: 0, completed: 0, overdue: 0 },
+        has_subordinates: hasSubordinates,
+        level: 0
+      });
+      // NO RECURSION - only direct subordinates
+    }
+    
+    return result;
+  }
+
   async getAllSubordinatesHierarchy(managerId, level = 0, visited = new Set()) {
     await this.initialize();
     

@@ -205,6 +205,23 @@ app.post('/api/brands', authenticateToken, async (req, res) => {
   }
 });
 
+app.post('/api/brands/get-or-create', authenticateToken, async (req, res) => {
+  try {
+    console.log('[Server] Get or create brand request body:', req.body);
+    if (!req.body.name || !req.body.name.trim()) {
+      console.log('[Server] No brand name provided');
+      return res.json({ success: false, error: 'Brand name is required' });
+    }
+    console.log('[Server] Get or create brand:', req.body.name.trim());
+    const result = await db.getOrCreateBrand(req.body.name.trim());
+    console.log('[Server] Brand result:', result);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('[Server] Brand get-or-create error:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
 app.put('/api/brands/:id', authenticateToken, async (req, res) => {
   try {
     const result = await db.updateBrand({ ...req.body, id: parseInt(req.params.id) });
@@ -275,6 +292,23 @@ app.post('/api/store-groups', authenticateToken, async (req, res) => {
     const result = await db.addStoreGroup(req.body);
     res.json({ success: true, data: result });
   } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/store-groups/get-or-create', authenticateToken, async (req, res) => {
+  try {
+    console.log('[Server] Get or create store group request body:', req.body);
+    if (!req.body.name || !req.body.name.trim()) {
+      console.log('[Server] No store group name provided');
+      return res.json({ success: false, error: 'Store group name is required' });
+    }
+    console.log('[Server] Get or create store group:', req.body.name.trim());
+    const result = await db.getOrCreateStoreGroup(req.body.name.trim(), req.body.code || '');
+    console.log('[Server] Store group result:', result);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('[Server] Store group get-or-create error:', error);
     res.json({ success: false, error: error.message });
   }
 });
@@ -488,7 +522,7 @@ app.get('/api/team/hierarchy', authenticateToken, async (req, res) => {
   try {
     // Use manager_id from query if provided, otherwise use current user's ID
     const managerId = req.query.manager_id ? parseInt(req.query.manager_id) : req.user.id;
-    const hierarchy = await db.getAllSubordinatesHierarchy(managerId);
+    const hierarchy = await db.getDirectSubordinatesOnly(managerId);
     res.json({ success: true, data: hierarchy });
   } catch (error) {
     res.json({ success: false, error: error.message });
@@ -740,7 +774,15 @@ app.get('/api/reports/deliveries', authenticateToken, async (req, res) => {
 app.get('/api/tasks/metrics', authenticateToken, async (req, res) => {
   try {
     const { user_id, start_date, end_date } = req.query;
-    const metrics = await db.getTaskMetrics(parseInt(user_id), start_date, end_date);
+    
+    // If no user_id provided, use authenticated user's ID
+    const targetUserId = user_id ? parseInt(user_id) : req.user.userId;
+    
+    if (isNaN(targetUserId)) {
+      return res.json({ success: false, error: 'Invalid user_id' });
+    }
+    
+    const metrics = await db.getTaskMetrics(targetUserId, start_date, end_date);
     res.json({ success: true, data: metrics });
   } catch (error) {
     res.json({ success: false, error: error.message });
