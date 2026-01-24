@@ -522,9 +522,12 @@ app.get('/api/team/hierarchy', authenticateToken, async (req, res) => {
   try {
     // Use manager_id from query if provided, otherwise use current user's ID
     const managerId = req.query.manager_id ? parseInt(req.query.manager_id) : req.user.id;
+    console.log(`[HIERARCHY] Getting direct subordinates for manager_id=${managerId}`);
     const hierarchy = await db.getDirectSubordinatesOnly(managerId);
+    console.log(`[HIERARCHY] Returned ${hierarchy.length} direct subordinates:`, hierarchy.map(h => ({id: h.id, name: h.full_name})));
     res.json({ success: true, data: hierarchy });
   } catch (error) {
+    console.error(`[HIERARCHY] Error:`, error);
     res.json({ success: false, error: error.message });
   }
 });
