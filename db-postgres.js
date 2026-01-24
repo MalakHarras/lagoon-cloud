@@ -1607,16 +1607,19 @@ class Database {
       throw new Error('Only admin can update users');
     }
 
+    // Default active to 1 if not specified (preserve user's active status)
+    const activeStatus = data.active !== undefined ? data.active : 1;
+
     if (data.password) {
       const hashedPassword = bcrypt.hashSync(data.password, 10);
       await this.execute(
         'UPDATE users SET username = $1, password = $2, full_name = $3, role = $4, manager_id = $5, active = $6 WHERE id = $7',
-        [data.username, hashedPassword, data.full_name, data.role, data.manager_id || null, data.active, data.id]
+        [data.username, hashedPassword, data.full_name, data.role, data.manager_id || null, activeStatus, data.id]
       );
     } else {
       await this.execute(
         'UPDATE users SET username = $1, full_name = $2, role = $3, manager_id = $4, active = $5 WHERE id = $6',
-        [data.username, data.full_name, data.role, data.manager_id || null, data.active, data.id]
+        [data.username, data.full_name, data.role, data.manager_id || null, activeStatus, data.id]
       );
     }
     return { success: true };
