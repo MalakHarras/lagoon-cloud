@@ -1796,7 +1796,7 @@ class Database {
     }
     
     console.log('[getUserWeeklyScheduleWithVisits] Cairo today:', todayStr, 'dayOfWeek:', todayDayOfWeek);
-    console.log('[getUserWeeklyScheduleWithVisits] Date range:', dayDates.map(d => d.date));
+    console.log('[getUserWeeklyScheduleWithVisits] Date range:', dayDates.map(d => `${d.date}(day${d.dayOfWeek})`).join(', '));
     
     const schedules = await this.query(`
       SELECT rs.*, s.name as store_name, s.code as store_code
@@ -1806,11 +1806,15 @@ class Database {
       ORDER BY rs.day_of_week, s.name
     `, [userId]);
     
+    console.log('[getUserWeeklyScheduleWithVisits] Found', schedules.length, 'route_schedules for user', userId);
+    
     const result = [];
     // For each day in the next 7 days
     for (const dayInfo of dayDates) {
       // Find schedules that match this day of week
       const matchingSchedules = schedules.filter(s => s.day_of_week === dayInfo.dayOfWeek);
+      
+      console.log(`[getUserWeeklyScheduleWithVisits] Day ${dayInfo.date} (dayOfWeek=${dayInfo.dayOfWeek}): ${matchingSchedules.length} matching schedules`);
       
       for (const schedule of matchingSchedules) {
         const visitLog = await this.query(
@@ -1818,16 +1822,21 @@ class Database {
           [schedule.id, dayInfo.date]
         );
         
+        const isCompleted = visitLog.length > 0 ? (visitLog[0].is_completed || 0) : 0;
+        
+        console.log(`  - ${schedule.store_name}: route_schedule_id=${schedule.id}, visit_date=${dayInfo.date}, is_completed=${isCompleted}`);
+        
         result.push({
           ...schedule,
           visit_log_id: visitLog[0]?.id || null,
-          is_completed: visitLog[0]?.is_completed || 0,
+          is_completed: isCompleted,
           visit_date: dayInfo.date,
           completed_at: visitLog[0]?.completed_at || null
         });
       }
     }
     
+    console.log('[getUserWeeklyScheduleWithVisits] Returning', result.length, 'visit entries');
     return result;
   }
 
