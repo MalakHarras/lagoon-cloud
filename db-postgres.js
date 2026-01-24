@@ -15,9 +15,9 @@ class Database {
     this.pool = new Pool({
       connectionString: this.connectionString,
       ssl: false, // Disabled for local/self-hosted deployments
-      max: 20,
+      max: 5, // Reduced from 20 to conserve server RAM
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
+      connectionTimeoutMillis: 10000,
     });
 
     // Test connection

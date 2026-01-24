@@ -8,6 +8,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-lagoon}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lagoon_password}
       POSTGRES_DB: ${POSTGRES_DB:-lagoon}
+    command: postgres -c max_connections=20 -c shared_buffers=128MB
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
