@@ -367,18 +367,17 @@ app.delete('/api/store-groups/:id', authenticateToken, async (req, res) => {
 app.get('/api/snapshots', authenticateToken, async (req, res) => {
   try {
     const { store_id, product_id, start_date, end_date } = req.query;
-    console.log('[GET /api/snapshots] Query params:', { store_id, product_id, start_date, end_date });
     const snapshots = await db.getSnapshotsAll(
       store_id ? parseInt(store_id) : null,
       product_id ? parseInt(product_id) : null,
       start_date,
       end_date
     );
-    console.log('[GET /api/snapshots] Returned count:', snapshots.length, '- First ID:', snapshots[0]?.id, '- Last ID:', snapshots[snapshots.length - 1]?.id);
-    res.json({ success: true, data: snapshots });
+    // Always return consistent format
+    res.json({ success: true, data: snapshots || [] });
   } catch (error) {
     console.error('[GET /api/snapshots] Error:', error.message);
-    res.json({ success: false, error: error.message });
+    res.json({ success: false, data: [], error: error.message });
   }
 });
 

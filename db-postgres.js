@@ -636,38 +636,46 @@ class Database {
 
   async getSnapshotsAll(storeId = null, productId = null, startDate = null, endDate = null) {
     await this.initialize();
-    let sql = `
-      SELECT s.*, p.name as product_name, p.unit_price as product_price, st.name as store_name,
-             u.full_name as user_name, u.username as user_username
-      FROM stock_snapshot s
-      JOIN products p ON p.id = s.product_id
-      JOIN stores st ON st.id = s.store_id
-      LEFT JOIN users u ON u.id = s.user_id
-      WHERE 1=1
-    `;
-    const params = [];
-    let paramIndex = 1;
-
-    if (storeId) {
-      sql += ` AND s.store_id = $${paramIndex++}`;
-      params.push(storeId);
-    }
-    if (productId) {
-      sql += ` AND s.product_id = $${paramIndex++}`;
-      params.push(productId);
-    }
-    if (startDate) {
-      sql += ` AND s.date >= $${paramIndex++}`;
-      params.push(startDate);
-    }
-    if (endDate) {
-      sql += ` AND s.date <= $${paramIndex++}`;
-      params.push(endDate);
-    }
-
-    sql += ' ORDER BY s.date DESC, s.id DESC';
     
-    return this.query(sql, params);
+    // Use a single client for the entire query to ensure consistency
+    const client = await this.pool.connect();
+    try {
+      let sql = `
+        SELECT s.*, p.name as product_name, p.unit_price as product_price, st.name as store_name,
+               u.full_name as user_name, u.username as user_username
+        FROM stock_snapshot s
+        JOIN products p ON p.id = s.product_id
+        JOIN stores st ON st.id = s.store_id
+        LEFT JOIN users u ON u.id = s.user_id
+        WHERE 1=1
+      `;
+      const params = [];
+      let paramIndex = 1;
+
+      if (storeId) {
+        sql += ` AND s.store_id = $${paramIndex++}`;
+        params.push(storeId);
+      }
+      if (productId) {
+        sql += ` AND s.product_id = $${paramIndex++}`;
+        params.push(productId);
+      }
+      if (startDate) {
+        sql += ` AND s.date >= $${paramIndex++}`;
+        params.push(startDate);
+      }
+      if (endDate) {
+        sql += ` AND s.date <= $${paramIndex++}`;
+        params.push(endDate);
+      }
+
+      sql += ' ORDER BY s.date DESC, s.id DESC';
+      
+      const result = await client.query(sql, params);
+      return result.rows || [];
+    } finally {
+      client.release();
+    }
   }
 
   // ========== DELIVERIES ==========
