@@ -366,6 +366,11 @@ app.delete('/api/store-groups/:id', authenticateToken, async (req, res) => {
 // ============ SNAPSHOTS ROUTES ============
 app.get('/api/snapshots', authenticateToken, async (req, res) => {
   try {
+    // Prevent caching
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
     const { store_id, product_id, start_date, end_date } = req.query;
     const snapshots = await db.getSnapshotsAll(
       store_id ? parseInt(store_id) : null,
