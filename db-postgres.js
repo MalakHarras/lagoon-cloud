@@ -537,14 +537,19 @@ class Database {
   async addSnapshot(data, userId = null) {
     await this.initialize();
     
+    console.log('[DB addSnapshot] Received data:', data, 'userId:', userId);
+    
     // Check if snapshot already exists for this store/product/date
     const existing = await this.query(
       'SELECT id FROM stock_snapshot WHERE store_id = $1 AND product_id = $2 AND date = $3',
       [data.store_id, data.product_id, data.date]
     );
     
+    console.log('[DB addSnapshot] Existing snapshot found:', existing.length > 0 ? existing[0].id : 'none');
+    
     if (existing.length > 0) {
       // Update existing snapshot (overwrite)
+      console.log('[DB addSnapshot] Updating existing snapshot id:', existing[0].id);
       await this.execute(
         `UPDATE stock_snapshot 
          SET qty = $1, expiry_date = $2, price = $3, competitor_prices = $4, note = $5, user_id = $6
@@ -553,12 +558,14 @@ class Database {
       );
     } else {
       // Insert new snapshot
+      console.log('[DB addSnapshot] Inserting new snapshot');
       await this.execute(
         'INSERT INTO stock_snapshot (store_id, product_id, date, qty, expiry_date, price, competitor_prices, note, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
         [data.store_id, data.product_id, data.date, data.qty || 0, data.expiry_date || null, data.price || 0, data.competitor_prices || null, data.note || null, userId]
       );
     }
     
+    console.log('[DB addSnapshot] Successfully saved snapshot');
     return { success: true };
   }
 
