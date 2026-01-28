@@ -290,11 +290,13 @@ class Database {
   }
 
   async execute(sql, params = []) {
+    await this.initialize(); // Ensure pool is ready
     const pgSql = this.convertToPostgres(sql);
     await this.pool.query(pgSql, params);
   }
 
   async query(sql, params = []) {
+    await this.initialize(); // Ensure pool is ready
     const pgSql = this.convertToPostgres(sql);
     const result = await this.pool.query(pgSql, params);
     return result.rows;
@@ -416,7 +418,6 @@ class Database {
   async getOrCreateStoreGroup(name, code = '') {
     await this.initialize();
     const trimmedName = String(name).trim();
-    console.log('[DB] getOrCreateStoreGroup - looking for:', trimmedName);
     
     const existing = await this.query(
       'SELECT id FROM store_groups WHERE LOWER(name) = LOWER($1)',
@@ -424,17 +425,14 @@ class Database {
     );
     
     if (existing.length > 0) {
-      console.log('[DB] Store group exists with id:', existing[0].id);
       return { id: existing[0].id, created: false };
     }
     
-    console.log('[DB] Creating new store group:', trimmedName, 'code:', code);
     const result = await this.pool.query(
       'INSERT INTO store_groups (name, code) VALUES ($1, $2) RETURNING id',
       [trimmedName, code]
     );
     
-    console.log('[DB] Store group created with id:', result.rows[0].id);
     return { id: result.rows[0].id, created: true };
   }
 
@@ -472,7 +470,6 @@ class Database {
   async getOrCreateBrand(name) {
     await this.initialize();
     const trimmedName = String(name).trim();
-    console.log('[DB] getOrCreateBrand - looking for:', trimmedName);
     
     const existing = await this.query(
       'SELECT id FROM brands WHERE LOWER(name) = LOWER($1)',
@@ -480,17 +477,14 @@ class Database {
     );
     
     if (existing.length > 0) {
-      console.log('[DB] Brand exists with id:', existing[0].id);
       return { id: existing[0].id, created: false };
     }
     
-    console.log('[DB] Creating new brand:', trimmedName);
     const result = await this.pool.query(
       'INSERT INTO brands (name) VALUES ($1) RETURNING id',
       [trimmedName]
     );
     
-    console.log('[DB] Brand created with id:', result.rows[0].id);
     return { id: result.rows[0].id, created: true };
   }
 
@@ -557,14 +551,12 @@ class Database {
          WHERE store_id = $7 AND product_id = $8 AND date = $9`,
         [data.qty || 0, data.expiry_date || null, data.price || 0, data.competitor_prices || null, data.note || null, userId, data.store_id, data.product_id, data.date]
       );
-      console.log(`[Snapshot] Updated existing snapshot for store ${data.store_id}, product ${data.product_id}, date ${data.date}`);
     } else {
       // Insert new snapshot
       await this.execute(
         'INSERT INTO stock_snapshot (store_id, product_id, date, qty, expiry_date, price, competitor_prices, note, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
         [data.store_id, data.product_id, data.date, data.qty || 0, data.expiry_date || null, data.price || 0, data.competitor_prices || null, data.note || null, userId]
       );
-      console.log(`[Snapshot] Created new snapshot for store ${data.store_id}, product ${data.product_id}, date ${data.date}`);
     }
     
     return { success: true };
@@ -600,12 +592,21 @@ class Database {
 
   async deleteSnapshot(id) {
     await this.initialize();
+    
+    // First, mark any route tasks completed by this snapshot as uncompleted
+    await this.execute(
+      'UPDATE route_tasks SET is_completed = 0, completed_by_snapshot_id = NULL WHERE completed_by_snapshot_id = $1',
+      [id]
+    );
+    
+    // Then delete the snapshot
     await this.execute('DELETE FROM stock_snapshot WHERE id = $1', [id]);
     return { success: true };
   }
 
   async getSnapshotsAll(storeId = null, productId = null, startDate = null, endDate = null) {
     await this.initialize();
+    console.log('[DB] getSnapshotsAll called with:', { storeId, productId, startDate, endDate });
     let sql = `
       SELECT s.*, p.name as product_name, p.unit_price as product_price, st.name as store_name,
              u.full_name as user_name, u.username as user_username
@@ -636,7 +637,12 @@ class Database {
     }
 
     sql += ' ORDER BY s.date DESC, s.id DESC';
-    return this.query(sql, params);
+    
+    console.log('[getSnapshotsAll] Executing query with params:', params);
+    const result = await this.query(sql, params);
+    console.log('[getSnapshotsAll] Result count:', result.length);
+    
+    return result;
   }
 
   // ========== DELIVERIES ==========
@@ -1718,27 +1724,30 @@ class Database {
   async getRouteSchedules(userId = null) {
     await this.initialize();
     
-    // Calculate dates for NEXT 7 days starting from TODAY
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayDayOfWeek = today.getDay();
+    throw new Error('DEBUG: getRouteSchedules called! userId=' + userId);
     
-    console.log('[getRouteSchedules] Today:', today.toISOString().split('T')[0], 'Day of week:', todayDayOfWeek);
+    // Use local date formatting to avoid timezone issues
+    // Format a date as YYYY-MM-DD string
+    const formatDate = (d) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
     
-    // Map each day_of_week to its next occurrence (today or future only)
-    // If a day already passed this week, use next week's occurrence
-    const dayDates = {};
-    for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++) {
-      // Calculate days until this day_of_week
-      let daysUntil = (dayOfWeek - todayDayOfWeek + 7) % 7;
-      // If daysUntil is 0, it means today - which is fine, keep it as 0
-      
+    // Get today in local time
+    const today = new Date();
+    
+    // Create a 7-day rolling window starting from today
+    const dayDates = [];
+    for (let i = 0; i < 7; i++) {
       const d = new Date(today);
-      d.setDate(today.getDate() + daysUntil);
-      dayDates[dayOfWeek] = d.toISOString().split('T')[0];
+      d.setDate(today.getDate() + i);
+      dayDates.push({
+        date: formatDate(d),
+        dayOfWeek: d.getDay()
+      });
     }
-    
-    console.log('[getRouteSchedules] Day dates mapping:', dayDates);
     
     let sql = `
       SELECT rs.*, u.full_name as user_name, u.username, s.name as store_name, s.code as store_code,
@@ -1758,27 +1767,57 @@ class Database {
     sql += ' ORDER BY rs.user_id, rs.day_of_week, s.name';
     const schedules = await this.query(sql, params);
     
-    // Add visit completion status for current week
-    const result = [];
-    for (const schedule of schedules) {
-      const dateForDay = dayDates[schedule.day_of_week];
-      console.log(`[getRouteSchedules] Schedule ${schedule.id}: day_of_week=${schedule.day_of_week}, dateForDay=${dateForDay}`);
-      
-      const visitLog = await this.query(
-        'SELECT id, is_completed, completed_at FROM visit_logs WHERE route_schedule_id = $1 AND visit_date = $2',
-        [schedule.id, dateForDay]
-      );
-      
-      console.log(`[getRouteSchedules] Schedule ${schedule.id}: visitLog found:`, visitLog.length > 0 ? visitLog[0] : 'none');
-      
-      result.push({
-        ...schedule,
-        visit_log_id: visitLog[0]?.id || null,
-        is_completed: visitLog[0]?.is_completed || 0,
-        visit_date: dateForDay,
-        completed_at: visitLog[0]?.completed_at || null
-      });
+    if (schedules.length === 0) {
+      return [];
     }
+    
+    // Get all visit logs in ONE query
+    const scheduleIds = schedules.map(s => s.id);
+    const visitDates = dayDates.map(d => d.date);
+    
+    const visitLogs = await this.query(`
+      SELECT route_schedule_id, visit_date, id, is_completed, completed_at
+      FROM visit_logs
+      WHERE route_schedule_id = ANY($1)
+        AND visit_date = ANY($2)
+    `, [scheduleIds, visitDates]);
+    
+    // Create lookup map: "scheduleId_visitDate" -> visit log
+    const visitLogMap = {};
+    visitLogs.forEach(vl => {
+      const key = `${vl.route_schedule_id}_${vl.visit_date}`;
+      visitLogMap[key] = vl;
+    });
+    
+    // Build result with rolling 7-day window
+    const result = [];
+    for (const dayInfo of dayDates) {
+      const matchingSchedules = schedules.filter(s => s.day_of_week === dayInfo.dayOfWeek);
+      
+      for (const schedule of matchingSchedules) {
+        const key = `${schedule.id}_${dayInfo.date}`;
+        const visitLog = visitLogMap[key];
+        
+        result.push({
+          ...schedule,
+          visit_log_id: visitLog?.id || null,
+          is_completed: visitLog?.is_completed || 0,
+          visit_date: dayInfo.date,
+          completed_at: visitLog?.completed_at || null
+        });
+      }
+    }
+    
+    // Sort by visit_date to ensure chronological order (today first)
+    // visit_date is a string in YYYY-MM-DD format
+    if (result.length > 0) {
+      throw new Error('DEBUG: Before sort first date is: ' + result[0].visit_date);
+    }
+    result.sort((a, b) => {
+      const dateA = String(a.visit_date);
+      const dateB = String(b.visit_date);
+      return dateA.localeCompare(dateB);
+    });
     
     return result;
   }
@@ -1817,29 +1856,29 @@ class Database {
   async getUserWeeklyScheduleWithVisits(userId) {
     await this.initialize();
     
-    // Use Cairo timezone for date calculations
-    const cairoOffset = 2 * 60 * 60 * 1000; // UTC+2
-    const nowUTC = new Date();
-    const nowCairo = new Date(nowUTC.getTime() + cairoOffset);
+    // Use local date formatting to avoid timezone issues
+    const formatDate = (d) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
     
-    // Get today's date in Cairo timezone (YYYY-MM-DD format)
-    const todayStr = nowCairo.toISOString().split('T')[0];
-    const todayDayOfWeek = nowCairo.getUTCDay();
+    // Get today in local time
+    const today = new Date();
     
-    // Create a 7-day rolling window starting from today (Cairo time)
+    // Create a 7-day rolling window starting from today
     const dayDates = [];
     for (let i = 0; i < 7; i++) {
-      const d = new Date(nowCairo);
-      d.setUTCDate(nowCairo.getUTCDate() + i);
+      const d = new Date(today);
+      d.setDate(today.getDate() + i);
       dayDates.push({
-        date: d.toISOString().split('T')[0],
-        dayOfWeek: d.getUTCDay()
+        date: formatDate(d),
+        dayOfWeek: d.getDay()
       });
     }
     
-    console.log('[getUserWeeklyScheduleWithVisits] Cairo today:', todayStr, 'dayOfWeek:', todayDayOfWeek);
-    console.log('[getUserWeeklyScheduleWithVisits] Date range:', dayDates.map(d => `${d.date}(day${d.dayOfWeek})`).join(', '));
-    
+    // Get all schedules for user with store info
     const schedules = await this.query(`
       SELECT rs.*, s.name as store_name, s.code as store_code
       FROM route_schedules rs
@@ -1848,7 +1887,27 @@ class Database {
       ORDER BY rs.day_of_week, s.name
     `, [userId]);
     
-    console.log('[getUserWeeklyScheduleWithVisits] Found', schedules.length, 'route_schedules for user', userId);
+    if (schedules.length === 0) {
+      return [];
+    }
+    
+    // Get all visit logs for this user for the next 7 days in ONE query
+    const visitDates = dayDates.map(d => d.date);
+    const scheduleIds = schedules.map(s => s.id);
+    
+    const visitLogs = await this.query(`
+      SELECT route_schedule_id, visit_date, id, is_completed, completed_at 
+      FROM visit_logs 
+      WHERE route_schedule_id = ANY($1) 
+        AND visit_date = ANY($2)
+    `, [scheduleIds, visitDates]);
+    
+    // Create a lookup map for O(1) access: "scheduleId_date" -> visit log
+    const visitLogMap = {};
+    visitLogs.forEach(vl => {
+      const key = `${vl.route_schedule_id}_${vl.visit_date}`;
+      visitLogMap[key] = vl;
+    });
     
     const result = [];
     // For each day in the next 7 days
@@ -1856,29 +1915,28 @@ class Database {
       // Find schedules that match this day of week
       const matchingSchedules = schedules.filter(s => s.day_of_week === dayInfo.dayOfWeek);
       
-      console.log(`[getUserWeeklyScheduleWithVisits] Day ${dayInfo.date} (dayOfWeek=${dayInfo.dayOfWeek}): ${matchingSchedules.length} matching schedules`);
-      
       for (const schedule of matchingSchedules) {
-        const visitLog = await this.query(
-          'SELECT id, is_completed, completed_at FROM visit_logs WHERE route_schedule_id = $1 AND visit_date = $2',
-          [schedule.id, dayInfo.date]
-        );
-        
-        const isCompleted = visitLog.length > 0 ? (visitLog[0].is_completed || 0) : 0;
-        
-        console.log(`  - ${schedule.store_name}: route_schedule_id=${schedule.id}, visit_date=${dayInfo.date}, is_completed=${isCompleted}`);
+        const key = `${schedule.id}_${dayInfo.date}`;
+        const visitLog = visitLogMap[key];
         
         result.push({
           ...schedule,
-          visit_log_id: visitLog[0]?.id || null,
-          is_completed: isCompleted,
+          visit_log_id: visitLog?.id || null,
+          is_completed: visitLog?.is_completed || 0,
           visit_date: dayInfo.date,
-          completed_at: visitLog[0]?.completed_at || null
+          completed_at: visitLog?.completed_at || null
         });
       }
     }
     
-    console.log('[getUserWeeklyScheduleWithVisits] Returning', result.length, 'visit entries');
+    // Sort by visit_date to ensure chronological order (today first)
+    // visit_date is a string in YYYY-MM-DD format
+    result.sort((a, b) => {
+      const dateA = String(a.visit_date);
+      const dateB = String(b.visit_date);
+      return dateA.localeCompare(dateB);
+    });
+    
     return result;
   }
 
@@ -1915,37 +1973,20 @@ class Database {
   async markVisitCompleteFromSnapshot(storeId, userId, visitDate) {
     await this.initialize();
     
-    console.log(`[Route Mark] Marking visit for store ${storeId}, user ${userId}, date ${visitDate}`);
-    
     // Parse the date correctly
     const dateObj = new Date(visitDate + 'T00:00:00');
     const dayOfWeek = dateObj.getDay();
-    
-    console.log(`[Route Mark] Parsed date: ${dateObj.toISOString()}, day of week: ${dayOfWeek}`);
-    
-    // First, get all schedules for this user and store to debug
-    const allSchedules = await this.query(
-      'SELECT id, day_of_week FROM route_schedules WHERE user_id = $1 AND store_id = $2',
-      [userId, storeId]
-    );
-    
-    console.log(`[Route Mark] All schedules for user ${userId} and store ${storeId}:`, allSchedules);
     
     const schedule = await this.query(
       'SELECT id, store_id FROM route_schedules WHERE user_id = $1 AND store_id = $2 AND day_of_week = $3',
       [userId, storeId, dayOfWeek]
     );
     
-    console.log(`[Route Mark] Matching schedule:`, schedule);
-    
     if (schedule.length === 0) {
-      console.log(`[Route Mark] No schedule found for user ${userId}, store ${storeId}, day ${dayOfWeek}`);
       return { success: true, noSchedule: true };
     }
     
     const routeScheduleId = schedule[0].id;
-    
-    console.log(`[Route Mark] Found route schedule ID: ${routeScheduleId}`);
     
     // Delete any existing visit log for this schedule and date
     await this.execute(
@@ -2103,14 +2144,14 @@ class Database {
     return this.query(sql, params);
   }
 
-  async getCompetitorsReport(startDate, endDate) {
+  async getCompetitorsReport(startDate, endDate, storeGroupId = null) {
     await this.initialize();
     
     try {
       const allProducts = await this.query('SELECT id, name FROM products ORDER BY name') || [];
       const allCompetitors = await this.query('SELECT id, product_id, name FROM competitors ORDER BY name') || [];
       
-      const snapshots = await this.query(`
+      let snapshotSql = `
         SELECT 
           s.product_id,
           s.store_id,
@@ -2121,8 +2162,18 @@ class Database {
         JOIN stores st ON st.id = s.store_id
         WHERE s.date >= $1 AND s.date <= $2
           AND (s.price > 0 OR s.competitor_prices IS NOT NULL)
-        ORDER BY s.date DESC
-      `, [startDate, endDate]) || [];
+      `;
+      
+      const params = [startDate, endDate];
+      
+      if (storeGroupId) {
+        snapshotSql += ' AND st.store_group_id = $3';
+        params.push(storeGroupId);
+      }
+      
+      snapshotSql += ' ORDER BY s.date DESC';
+      
+      const snapshots = await this.query(snapshotSql, params) || [];
       
       return {
         products: allProducts,

@@ -60,6 +60,38 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// ============ DIAGNOSTIC ROUTES ============
+app.get('/api/diagnostic/snapshots', authenticateToken, async (req, res) => {
+  try {
+    const orphaned = await db.query(`
+      SELECT s.id, s.store_id, s.product_id, s.date,
+        CASE WHEN st.id IS NULL THEN 'Missing Store' ELSE NULL END as store_error,
+        CASE WHEN p.id IS NULL THEN 'Missing Product' ELSE NULL END as product_error
+      FROM stock_snapshot s
+      LEFT JOIN stores st ON st.id = s.store_id
+      LEFT JOIN products p ON p.id = s.product_id
+      WHERE st.id IS NULL OR p.id IS NULL
+    `);
+    
+    const total = await db.query('SELECT COUNT(*) as count FROM stock_snapshot');
+    const withJoins = await db.query(`
+      SELECT COUNT(*) as count FROM stock_snapshot s
+      JOIN products p ON p.id = s.product_id
+      JOIN stores st ON st.id = s.store_id
+    `);
+    
+    res.json({
+      success: true,
+      total: total[0].count,
+      withJoins: withJoins[0].count,
+      orphaned: orphaned
+    });
+  } catch (error) {
+    console.error('[Diagnostic] Error:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
 // ============ AUTH ROUTES ============
 app.post('/api/auth/login', async (req, res) => {
   try {
@@ -335,21 +367,30 @@ app.delete('/api/store-groups/:id', authenticateToken, async (req, res) => {
 app.get('/api/snapshots', authenticateToken, async (req, res) => {
   try {
     const { store_id, product_id, start_date, end_date } = req.query;
+    console.log('[GET /api/snapshots] Query params:', { store_id, product_id, start_date, end_date });
     const snapshots = await db.getSnapshotsAll(
       store_id ? parseInt(store_id) : null,
       product_id ? parseInt(product_id) : null,
       start_date,
       end_date
     );
+    console.log('[GET /api/snapshots] Returned count:', snapshots.length, '- First ID:', snapshots[0]?.id, '- Last ID:', snapshots[snapshots.length - 1]?.id);
     res.json({ success: true, data: snapshots });
   } catch (error) {
+    console.error('[GET /api/snapshots] Error:', error.message);
     res.json({ success: false, error: error.message });
   }
 });
 
 app.post('/api/snapshots', authenticateToken, async (req, res) => {
   try {
-    const result = await db.addSnapshot(req.body, req.user.id);
+    const data = { ...req.body };
+    // Convert competitor_prices to JSON string if it's an object/array (for backwards compatibility)
+    // If it's already a string, leave it as is
+    if (data.competitor_prices && typeof data.competitor_prices !== 'string') {
+      data.competitor_prices = JSON.stringify(data.competitor_prices);
+    }
+    const result = await db.addSnapshot(data, req.user.id);
     // Mark visit complete if applicable
     if (req.body.store_id && req.body.date) {
       await db.markVisitCompleteFromSnapshot(req.body.store_id, req.user.id, req.body.date);
@@ -410,7 +451,14 @@ app.delete('/api/deliveries/:id', authenticateToken, async (req, res) => {
 // ============ TASKS ROUTES ============
 app.get('/api/tasks', authenticateToken, async (req, res) => {
   try {
-    const tasks = await db.getTasks(req.user.id, req.query);
+    // Convert string query params to proper types
+    const filters = { ...req.query };
+    if (filters.assignedTo) filters.assignedTo = parseInt(filters.assignedTo);
+    if (filters.assignedBy) filters.assignedBy = parseInt(filters.assignedBy);
+    if (filters.limit) filters.limit = parseInt(filters.limit);
+    if (filters.offset) filters.offset = parseInt(filters.offset);
+    
+    const tasks = await db.getTasks(req.user.id, filters);
     res.json({ success: true, data: tasks });
   } catch (error) {
     res.json({ success: false, error: error.message });
@@ -743,8 +791,8 @@ app.get('/api/reports/deliveries-matrix', authenticateToken, async (req, res) =>
 
 app.get('/api/reports/competitors', authenticateToken, async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
-    const data = await db.getCompetitorsReport(startDate, endDate);
+    const { startDate, endDate, storeGroupId } = req.query;
+    const data = await db.getCompetitorsReport(startDate, endDate, storeGroupId ? parseInt(storeGroupId) : null);
     res.json({ success: true, data });
   } catch (error) {
     res.json({ success: false, error: error.message });
@@ -810,6 +858,66 @@ app.use((req, res) => {
 });
 
 // Start server
+// ============ DIAGNOSTIC ENDPOINT ============
+app.get('/api/debug/snapshots-check', authenticateToken, async (req, res) => {
+  try {
+    // Only allow admin access
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Admin only' });
+    }
+    
+    // Get total count from stock_snapshot table
+    const totalCount = await db.query('SELECT COUNT(*) as count FROM stock_snapshot');
+    
+    // Get count with JOIN (like getSnapshotsAll does)
+    const joinCount = await db.query(`
+      SELECT COUNT(*) as count 
+      FROM stock_snapshot s
+      JOIN products p ON p.id = s.product_id
+      JOIN stores st ON st.id = s.store_id
+    `);
+    
+    // Find orphaned snapshots (missing product or store)
+    const orphanedProducts = await db.query(`
+      SELECT s.id, s.product_id, s.store_id, s.date
+      FROM stock_snapshot s
+      LEFT JOIN products p ON p.id = s.product_id
+      WHERE p.id IS NULL
+    `);
+    
+    const orphanedStores = await db.query(`
+      SELECT s.id, s.product_id, s.store_id, s.date
+      FROM stock_snapshot s
+      LEFT JOIN stores st ON st.id = s.store_id
+      WHERE st.id IS NULL
+    `);
+    
+    // Get latest 5 snapshots
+    const latestSnapshots = await db.query(`
+      SELECT s.id, s.store_id, s.product_id, s.date, st.name as store_name, p.name as product_name
+      FROM stock_snapshot s
+      LEFT JOIN products p ON p.id = s.product_id
+      LEFT JOIN stores st ON st.id = s.store_id
+      ORDER BY s.id DESC
+      LIMIT 5
+    `);
+    
+    res.json({
+      success: true,
+      data: {
+        total_in_table: parseInt(totalCount[0].count),
+        total_with_join: parseInt(joinCount[0].count),
+        orphaned_products: orphanedProducts,
+        orphaned_stores: orphanedStores,
+        latest_snapshots: latestSnapshots
+      }
+    });
+  } catch (error) {
+    console.error('[DEBUG] Error:', error);
+    res.json({ success: false, error: error.message });
+  }
+});
+
 async function startServer() {
   try {
     await db.initialize();
