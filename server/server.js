@@ -384,17 +384,13 @@ app.get('/api/snapshots', authenticateToken, async (req, res) => {
 
 app.post('/api/snapshots', authenticateToken, async (req, res) => {
   try {
-    console.log('[POST /api/snapshots] Received data:', JSON.stringify(req.body));
-    console.log('[POST /api/snapshots] User:', req.user.id, req.user.username);
     const data = { ...req.body };
     // Convert competitor_prices to JSON string if it's an object/array (for backwards compatibility)
     // If it's already a string, leave it as is
     if (data.competitor_prices && typeof data.competitor_prices !== 'string') {
       data.competitor_prices = JSON.stringify(data.competitor_prices);
     }
-    console.log('[POST /api/snapshots] Data after processing:', JSON.stringify(data));
     const result = await db.addSnapshot(data, req.user.id);
-    console.log('[POST /api/snapshots] Save result:', result);
     // Mark visit complete if applicable
     if (req.body.store_id && req.body.date) {
       await db.markVisitCompleteFromSnapshot(req.body.store_id, req.user.id, req.body.date);

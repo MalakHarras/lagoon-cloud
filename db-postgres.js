@@ -7,15 +7,35 @@ class Database {
   constructor(connectionString) {
     this.connectionString = connectionString || process.env.DATABASE_URL;
     this.pool = null;
+    this.initPromise = null; // Track initialization promise to prevent race conditions
   }
 
   async initialize() {
+    // If already initialized, return immediately
     if (this.pool) return;
+    
+    // If initialization is in progress, wait for it
+    if (this.initPromise) {
+      return this.initPromise;
+    }
 
+    // Start initialization and store the promise
+    this.initPromise = this._doInitialize();
+    
+    try {
+      await this.initPromise;
+    } catch (error) {
+      // Reset on failure so we can retry
+      this.initPromise = null;
+      throw error;
+    }
+  }
+
+  async _doInitialize() {
     this.pool = new Pool({
       connectionString: this.connectionString,
       ssl: false, // Disabled for local/self-hosted deployments
-      max: 5, // Reduced from 20 to conserve server RAM
+      max: 10, // Increased for better concurrent request handling
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 10000,
     });
@@ -292,14 +312,24 @@ class Database {
   async execute(sql, params = []) {
     await this.initialize(); // Ensure pool is ready
     const pgSql = this.convertToPostgres(sql);
-    await this.pool.query(pgSql, params);
+    const client = await this.pool.connect();
+    try {
+      await client.query(pgSql, params);
+    } finally {
+      client.release();
+    }
   }
 
   async query(sql, params = []) {
     await this.initialize(); // Ensure pool is ready
     const pgSql = this.convertToPostgres(sql);
-    const result = await this.pool.query(pgSql, params);
-    return result.rows;
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(pgSql, params);
+      return result.rows;
+    } finally {
+      client.release();
+    }
   }
 
   // Convert SQLite-style ? placeholders to PostgreSQL $1, $2, etc.
@@ -537,19 +567,14 @@ class Database {
   async addSnapshot(data, userId = null) {
     await this.initialize();
     
-    console.log('[DB addSnapshot] Received data:', data, 'userId:', userId);
-    
     // Check if snapshot already exists for this store/product/date
     const existing = await this.query(
       'SELECT id FROM stock_snapshot WHERE store_id = $1 AND product_id = $2 AND date = $3',
       [data.store_id, data.product_id, data.date]
     );
     
-    console.log('[DB addSnapshot] Existing snapshot found:', existing.length > 0 ? existing[0].id : 'none');
-    
     if (existing.length > 0) {
       // Update existing snapshot (overwrite)
-      console.log('[DB addSnapshot] Updating existing snapshot id:', existing[0].id);
       await this.execute(
         `UPDATE stock_snapshot 
          SET qty = $1, expiry_date = $2, price = $3, competitor_prices = $4, note = $5, user_id = $6
@@ -558,14 +583,12 @@ class Database {
       );
     } else {
       // Insert new snapshot
-      console.log('[DB addSnapshot] Inserting new snapshot');
       await this.execute(
         'INSERT INTO stock_snapshot (store_id, product_id, date, qty, expiry_date, price, competitor_prices, note, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
         [data.store_id, data.product_id, data.date, data.qty || 0, data.expiry_date || null, data.price || 0, data.competitor_prices || null, data.note || null, userId]
       );
     }
     
-    console.log('[DB addSnapshot] Successfully saved snapshot');
     return { success: true };
   }
 
@@ -613,7 +636,6 @@ class Database {
 
   async getSnapshotsAll(storeId = null, productId = null, startDate = null, endDate = null) {
     await this.initialize();
-    console.log('[DB] getSnapshotsAll called with:', { storeId, productId, startDate, endDate });
     let sql = `
       SELECT s.*, p.name as product_name, p.unit_price as product_price, st.name as store_name,
              u.full_name as user_name, u.username as user_username
@@ -645,11 +667,7 @@ class Database {
 
     sql += ' ORDER BY s.date DESC, s.id DESC';
     
-    console.log('[getSnapshotsAll] Executing query with params:', params);
-    const result = await this.query(sql, params);
-    console.log('[getSnapshotsAll] Result count:', result.length);
-    
-    return result;
+    return this.query(sql, params);
   }
 
   // ========== DELIVERIES ==========
