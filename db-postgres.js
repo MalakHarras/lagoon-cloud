@@ -1757,8 +1757,6 @@ class Database {
   async getRouteSchedules(userId = null) {
     await this.initialize();
     
-    throw new Error('DEBUG: getRouteSchedules called! userId=' + userId);
-    
     // Use local date formatting to avoid timezone issues
     // Format a date as YYYY-MM-DD string
     const formatDate = (d) => {
