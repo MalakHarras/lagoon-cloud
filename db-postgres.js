@@ -1841,9 +1841,6 @@ class Database {
     
     // Sort by visit_date to ensure chronological order (today first)
     // visit_date is a string in YYYY-MM-DD format
-    if (result.length > 0) {
-      throw new Error('DEBUG: Before sort first date is: ' + result[0].visit_date);
-    }
     result.sort((a, b) => {
       const dateA = String(a.visit_date);
       const dateB = String(b.visit_date);
