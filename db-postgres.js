@@ -2001,14 +2001,19 @@ class Database {
   async markVisitCompleteFromSnapshot(storeId, userId, visitDate) {
     await this.initialize();
     
-    // Parse the date correctly
-    const dateObj = new Date(visitDate + 'T00:00:00');
+    // Parse the date correctly - visitDate is in YYYY-MM-DD format
+    // Create date at noon to avoid timezone issues
+    const dateObj = new Date(visitDate + 'T12:00:00');
     const dayOfWeek = dateObj.getDay();
+    
+    console.log(`[Route Mark] Looking for schedule: userId=${userId}, storeId=${storeId}, visitDate=${visitDate}, dayOfWeek=${dayOfWeek}`);
     
     const schedule = await this.query(
       'SELECT id, store_id FROM route_schedules WHERE user_id = $1 AND store_id = $2 AND day_of_week = $3',
       [userId, storeId, dayOfWeek]
     );
+    
+    console.log(`[Route Mark] Found ${schedule.length} matching schedules`);
     
     if (schedule.length === 0) {
       return { success: true, noSchedule: true };
@@ -2029,7 +2034,7 @@ class Database {
       [routeScheduleId, storeId, userId, visitDate]
     );
     
-    console.log(`[Route Mark] Visit marked as completed for route ${routeScheduleId}`);
+    console.log(`[Route Mark] Visit marked as completed for route ${routeScheduleId}, date ${visitDate}`);
     
     return { success: true, isCompleted: true };
   }

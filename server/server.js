@@ -392,7 +392,9 @@ app.post('/api/snapshots', authenticateToken, async (req, res) => {
     const result = await db.addSnapshot(data, req.user.id);
     // Mark visit complete if applicable
     if (req.body.store_id && req.body.date) {
-      await db.markVisitCompleteFromSnapshot(req.body.store_id, req.user.id, req.body.date);
+      console.log(`[Snapshot] Marking visit complete: storeId=${req.body.store_id}, userId=${req.user.id}, date=${req.body.date}`);
+      const markResult = await db.markVisitCompleteFromSnapshot(req.body.store_id, req.user.id, req.body.date);
+      console.log(`[Snapshot] Mark visit result:`, markResult);
     }
     res.json({ success: true, data: result });
   } catch (error) {
