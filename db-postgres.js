@@ -1770,7 +1770,8 @@ class Database {
     
     // Get today in local time
     const today = new Date();
-    console.log(`[getRouteSchedules] Today is ${formatDate(today)}`);
+    const todayStr = formatDate(today);
+    console.log(`[getRouteSchedules] Today is ${todayStr}, server time:`, today.toISOString());
     
     // Create a 7-day rolling window starting from today
     const dayDates = [];
@@ -1782,7 +1783,7 @@ class Database {
         dayOfWeek: d.getDay()
       });
     }
-    console.log(`[getRouteSchedules] 7-day window:`, dayDates.map(d => `${d.date}(${d.dayOfWeek})`).join(', '));
+    console.log(`[getRouteSchedules] 7-day window:`, dayDates.map(d => `${d.date}(day${d.dayOfWeek})`).join(', '));
     
     let sql = `
       SELECT rs.*, u.full_name as user_name, u.username, s.name as store_name, s.code as store_code,
@@ -1800,17 +1801,22 @@ class Database {
     }
     
     sql += ' ORDER BY rs.user_id, rs.day_of_week, s.name';
+    console.log(`[getRouteSchedules] SQL:`, sql);
+    console.log(`[getRouteSchedules] Params:`, params);
     const schedules = await this.query(sql, params);
     
     console.log(`[getRouteSchedules] Found ${schedules.length} base schedules`);
     if (schedules.length > 0) {
-      console.log(`[getRouteSchedules] Sample schedule:`, {
+      console.log(`[getRouteSchedules] First schedule:`, {
         id: schedules[0].id,
         user_id: schedules[0].user_id,
+        user_name: schedules[0].user_name,
         store_id: schedules[0].store_id,
-        day_of_week: schedules[0].day_of_week,
-        store_name: schedules[0].store_name
+        store_name: schedules[0].store_name,
+        day_of_week: schedules[0].day_of_week
       });
+    } else {
+      console.log(`[getRouteSchedules] WARNING: No base schedules found in database!`);
     }
     
     if (schedules.length === 0) {
