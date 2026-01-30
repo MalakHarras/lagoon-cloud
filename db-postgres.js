@@ -32,21 +32,47 @@ class Database {
   }
 
   async _doInitialize() {
-    this.pool = new Pool({
-      connectionString: this.connectionString,
-      ssl: false, // Disabled for local/self-hosted deployments
-      max: 10, // Increased for better concurrent request handling
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
-    });
+    // Retry connection up to 5 times with exponential backoff
+    let retries = 5;
+    let lastError;
+    
+    while (retries > 0) {
+      try {
+        this.pool = new Pool({
+          connectionString: this.connectionString,
+          ssl: false,
+          max: 20, // Increased for better concurrent request handling
+          min: 2, // Keep minimum connections alive
+          idleTimeoutMillis: 30000,
+          connectionTimeoutMillis: 15000,
+          allowExitOnIdle: false,
+        });
 
-    // Test connection
-    const client = await this.pool.connect();
-    try {
-      await client.query('SELECT NOW()');
-      console.log('PostgreSQL connected successfully');
-    } finally {
-      client.release();
+        // Test connection with retry
+        const client = await this.pool.connect();
+        try {
+          await client.query('SELECT NOW()');
+          console.log('PostgreSQL connected successfully');
+        } finally {
+          client.release();
+        }
+        
+        // Connection successful, break retry loop
+        break;
+      } catch (error) {
+        lastError = error;
+        retries--;
+        if (retries > 0) {
+          const waitTime = (6 - retries) * 1000; // 1s, 2s, 3s, 4s, 5s
+          console.log(`Database connection failed, retrying in ${waitTime}ms... (${retries} attempts left)`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+      }
+    }
+    
+    if (retries === 0) {
+      console.error('Failed to connect to database after 5 attempts:', lastError);
+      throw lastError;
     }
 
     // Create schema
@@ -323,13 +349,36 @@ class Database {
   async query(sql, params = []) {
     await this.initialize(); // Ensure pool is ready
     const pgSql = this.convertToPostgres(sql);
-    const client = await this.pool.connect();
-    try {
-      const result = await client.query(pgSql, params);
-      return result.rows;
-    } finally {
-      client.release();
+    
+    // Retry query up to 3 times on connection errors
+    let retries = 3;
+    let lastError;
+    
+    while (retries > 0) {
+      let client;
+      try {
+        client = await this.pool.connect();
+        const result = await client.query(pgSql, params);
+        return result.rows;
+      } catch (error) {
+        lastError = error;
+        // Retry on connection errors, not on SQL errors
+        if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === '57P03' || error.code === 'ECONNRESET') {
+          retries--;
+          if (retries > 0) {
+            console.log(`Query failed with connection error ${error.code}, retrying... (${retries} attempts left)`);<br/>            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        } else {
+          // Non-connection error, throw immediately
+          throw error;
+        }
+      } finally {
+        if (client) client.release();
+      }
     }
+    
+    console.error('Query failed after retries:', lastError);
+    throw lastError;
   }
 
   // Convert SQLite-style ? placeholders to PostgreSQL $1, $2, etc.

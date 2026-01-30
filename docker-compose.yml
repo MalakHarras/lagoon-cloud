@@ -3,42 +3,46 @@ version: '3.8'
 services:
   db:
     image: postgres:15-alpine
-    restart: unless-stopped
+    container_name: lagoon-postgres
+    restart: always
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-lagoon}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lagoon_password}
-      POSTGRES_DB: ${POSTGRES_DB:-lagoon}
-    command: >
-      postgres
-      -c max_connections=20
-      -c shared_buffers=128MB
-      -c autovacuum_naptime=1h
-      -c autovacuum_vacuum_scale_factor=0.2
-      -c autovacuum_analyze_scale_factor=0.1
-      -c autovacuum_vacuum_cost_delay=20ms
-      -c autovacuum_vacuum_cost_limit=200
-      -c maintenance_work_mem=64MB
+      POSTGRES_USER: lagoon
+      POSTGRES_PASSWORD: lagoon_password_2026
+      POSTGRES_DB: lagoon
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lagoon -d lagoon"]
-      interval: 30s
-      timeout: 5s
+      interval: 10s
+      timeout: 3s
       retries: 5
+      start_period: 30s
+    networks:
+      - lagoon-network
 
   app:
-    build: .
-    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lagoon-app
+    restart: always
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-lagoon}:${POSTGRES_PASSWORD:-lagoon_password}@db:5432/${POSTGRES_DB:-lagoon}
-      - JWT_SECRET=${JWT_SECRET:-change_this_secret}
-      - PORT=3000
-      - NODE_ENV=production
+      DATABASE_URL: postgresql://lagoon:lagoon_password_2026@db:5432/lagoon
+      JWT_SECRET: lagoon-jwt-secret-key-2026-production
+      PORT: 3000
+      NODE_ENV: production
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - lagoon-network
 
 volumes:
   postgres_data:
+    driver: local
+
+networks:
+  lagoon-network:
+    driver: bridge
