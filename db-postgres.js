@@ -1757,6 +1757,8 @@ class Database {
   async getRouteSchedules(userId = null) {
     await this.initialize();
     
+    console.log(`[getRouteSchedules] Called with userId=${userId}`);
+    
     // Use local date formatting to avoid timezone issues
     // Format a date as YYYY-MM-DD string
     const formatDate = (d) => {
@@ -1768,6 +1770,7 @@ class Database {
     
     // Get today in local time
     const today = new Date();
+    console.log(`[getRouteSchedules] Today is ${formatDate(today)}`);
     
     // Create a 7-day rolling window starting from today
     const dayDates = [];
@@ -1779,6 +1782,7 @@ class Database {
         dayOfWeek: d.getDay()
       });
     }
+    console.log(`[getRouteSchedules] 7-day window:`, dayDates.map(d => `${d.date}(${d.dayOfWeek})`).join(', '));
     
     let sql = `
       SELECT rs.*, u.full_name as user_name, u.username, s.name as store_name, s.code as store_code,
@@ -1798,7 +1802,19 @@ class Database {
     sql += ' ORDER BY rs.user_id, rs.day_of_week, s.name';
     const schedules = await this.query(sql, params);
     
+    console.log(`[getRouteSchedules] Found ${schedules.length} base schedules`);
+    if (schedules.length > 0) {
+      console.log(`[getRouteSchedules] Sample schedule:`, {
+        id: schedules[0].id,
+        user_id: schedules[0].user_id,
+        store_id: schedules[0].store_id,
+        day_of_week: schedules[0].day_of_week,
+        store_name: schedules[0].store_name
+      });
+    }
+    
     if (schedules.length === 0) {
+      console.log(`[getRouteSchedules] No schedules found, returning empty array`);
       return [];
     }
     
@@ -1812,6 +1828,8 @@ class Database {
       WHERE route_schedule_id = ANY($1)
         AND visit_date = ANY($2)
     `, [scheduleIds, visitDates]);
+    
+    console.log(`[getRouteSchedules] Found ${visitLogs.length} visit logs`);
     
     // Create lookup map: "scheduleId_visitDate" -> visit log
     const visitLogMap = {};
@@ -1846,6 +1864,15 @@ class Database {
       const dateB = String(b.visit_date);
       return dateA.localeCompare(dateB);
     });
+    
+    console.log(`[getRouteSchedules] Returning ${result.length} schedule entries (${schedules.length} base schedules × 7 days)`);
+    if (result.length > 0) {
+      console.log(`[getRouteSchedules] First result:`, {
+        store_name: result[0].store_name,
+        visit_date: result[0].visit_date,
+        is_completed: result[0].is_completed
+      });
+    }
     
     return result;
   }

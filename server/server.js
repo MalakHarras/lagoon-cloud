@@ -623,9 +623,12 @@ app.put('/api/notifications/read-all', authenticateToken, async (req, res) => {
 app.get('/api/route-schedules', authenticateToken, async (req, res) => {
   try {
     const userId = req.query.user_id ? parseInt(req.query.user_id) : null;
+    console.log(`[GET /api/route-schedules] Request from user ${req.user.id} (${req.user.username}), querying userId=${userId}`);
     const schedules = await db.getRouteSchedules(userId);
+    console.log(`[GET /api/route-schedules] Returning ${schedules.length} schedules`);
     res.json({ success: true, data: schedules });
   } catch (error) {
+    console.error(`[GET /api/route-schedules] Error:`, error);
     res.json({ success: false, error: error.message });
   }
 });
