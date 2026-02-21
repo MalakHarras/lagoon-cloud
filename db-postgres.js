@@ -93,11 +93,64 @@ class Database {
         username VARCHAR(255) NOT NULL UNIQUE,
         password VARCHAR(255) NOT NULL,
         full_name VARCHAR(255),
-        role VARCHAR(50) NOT NULL CHECK(role IN ('admin', 'general_manager', 'sales_manager', 'accounting_manager', 'sales_supervisor', 'accountant', 'merchandiser')),
+        role VARCHAR(50) NOT NULL CHECK(role IN ('admin', 'general_manager', 'sales_manager', 'accounting_manager', 'import_manager', 'sales_supervisor', 'accountant', 'merchandiser')),
         manager_id INTEGER REFERENCES users(id),
         active INTEGER DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         last_login TIMESTAMP
+      );
+
+      -- Role permissions table - defines what each role can do by default
+      CREATE TABLE IF NOT EXISTS role_permissions (
+        id SERIAL PRIMARY KEY,
+        role VARCHAR(50) NOT NULL,
+        permission_key VARCHAR(100) NOT NULL,
+        allowed INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(role, permission_key)
+      );
+
+      -- User permission overrides - allows per-user customization
+      CREATE TABLE IF NOT EXISTS user_permissions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        permission_key VARCHAR(100) NOT NULL,
+        allowed INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, permission_key)
+      );
+
+      -- Inventory transactions table (دخول/خروج مخزن)
+      CREATE TABLE IF NOT EXISTS inventory_transactions (
+        id SERIAL PRIMARY KEY,
+        transaction_type VARCHAR(10) NOT NULL CHECK(transaction_type IN ('in', 'out')),
+        product_id INTEGER NOT NULL REFERENCES products(id),
+        quantity DECIMAL(10, 2) NOT NULL,
+        unit_cost DECIMAL(10, 2) DEFAULT 0,
+        total_cost DECIMAL(12, 2) DEFAULT 0,
+        reference_number VARCHAR(100),
+        supplier_name VARCHAR(255),
+        destination VARCHAR(255),
+        store_id INTEGER REFERENCES stores(id),
+        note TEXT,
+        transaction_date DATE NOT NULL,
+        created_by INTEGER NOT NULL REFERENCES users(id),
+        approved_by INTEGER REFERENCES users(id),
+        approved_at TIMESTAMP,
+        status VARCHAR(20) DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'cancelled')),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Inventory stock view helper - current stock levels
+      CREATE TABLE IF NOT EXISTS inventory_stock (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER NOT NULL REFERENCES products(id) UNIQUE,
+        current_quantity DECIMAL(10, 2) DEFAULT 0,
+        last_in_date DATE,
+        last_out_date DATE,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
       -- Brands table
@@ -166,6 +219,18 @@ class Database {
         date DATE NOT NULL,
         qty DECIMAL(10, 2) DEFAULT 0,
         note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Sales Returns table
+      CREATE TABLE IF NOT EXISTS sales_returns (
+        id SERIAL PRIMARY KEY,
+        store_id INTEGER NOT NULL REFERENCES stores(id),
+        product_id INTEGER NOT NULL REFERENCES products(id),
+        date DATE NOT NULL,
+        qty DECIMAL(10, 2) DEFAULT 0,
+        note TEXT,
+        user_id INTEGER REFERENCES users(id),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -319,7 +384,94 @@ class Database {
       CREATE INDEX IF NOT EXISTS idx_route_tasks_user ON route_tasks(user_id);
       CREATE INDEX IF NOT EXISTS idx_visit_logs_user_date ON visit_logs(user_id, visit_date);
       CREATE INDEX IF NOT EXISTS idx_visit_logs_schedule ON visit_logs(route_schedule_id);
+      CREATE INDEX IF NOT EXISTS idx_role_permissions_role ON role_permissions(role);
+      CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_inventory_transactions_product ON inventory_transactions(product_id);
+      CREATE INDEX IF NOT EXISTS idx_inventory_transactions_date ON inventory_transactions(transaction_date);
+      CREATE INDEX IF NOT EXISTS idx_inventory_transactions_type ON inventory_transactions(transaction_type);
+      CREATE INDEX IF NOT EXISTS idx_inventory_stock_product ON inventory_stock(product_id);
     `);
+    
+    // Initialize default role permissions
+    await this.initializeDefaultPermissions();
+  }
+
+  async initializeDefaultPermissions() {
+    // Define all permission keys and their default settings per role
+    const permissions = {
+      // Page access permissions
+      'page.dashboard': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 1, merchandiser: 1 },
+      'page.tasks': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 1, merchandiser: 1 },
+      'page.snapshots': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 1, merchandiser: 1 },
+      'page.deliveries': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 1, merchandiser: 1 },
+      'page.routes': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 0, import_manager: 0, sales_supervisor: 1, accountant: 0, merchandiser: 1 },
+      'page.reports': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'page.management': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 0, import_manager: 1, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'page.users': { admin: 1, general_manager: 1, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'page.access_control': { admin: 1, general_manager: 1, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'page.inventory': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 1, merchandiser: 0 },
+      
+      // Inventory permissions
+      'inventory.view_stock': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'inventory.create_in': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 1, merchandiser: 0 },
+      'inventory.create_out': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 1, merchandiser: 0 },
+      'inventory.delete': { admin: 1, general_manager: 1, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'inventory.approve': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      
+      // User management permissions
+      'users.view': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 1, merchandiser: 1 },
+      'users.create': { admin: 1, general_manager: 1, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'users.edit': { admin: 1, general_manager: 1, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'users.delete': { admin: 1, general_manager: 0, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      
+      // Task permissions
+      'tasks.view_all': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 0, merchandiser: 0 },
+      'tasks.assign_to_others': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 0, merchandiser: 0 },
+      'tasks.delete': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      
+      // Report permissions
+      'reports.view_team': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 1, accountant: 0, merchandiser: 0 },
+      'reports.export': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 1, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      
+      // Management permissions
+      'management.products': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 0, import_manager: 1, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'management.stores': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'management.brands': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 0, import_manager: 1, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      
+      // Route permissions
+      'routes.manage': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 0, import_manager: 0, sales_supervisor: 1, accountant: 0, merchandiser: 0 },
+      
+      // Snapshot permissions
+      'snapshots.edit': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 0, import_manager: 0, sales_supervisor: 1, accountant: 0, merchandiser: 1 },
+      'snapshots.delete': { admin: 1, general_manager: 1, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      
+      // Delivery permissions
+      'deliveries.create': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 0, import_manager: 1, sales_supervisor: 1, accountant: 0, merchandiser: 1 },
+      'deliveries.delete': { admin: 1, general_manager: 1, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      
+      // Returns permissions
+      'page.returns': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 0, sales_supervisor: 1, accountant: 1, merchandiser: 1 },
+      'returns.view': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 1, import_manager: 0, sales_supervisor: 1, accountant: 1, merchandiser: 1 },
+      'returns.create': { admin: 1, general_manager: 1, sales_manager: 1, accounting_manager: 0, import_manager: 0, sales_supervisor: 1, accountant: 0, merchandiser: 1 },
+      'returns.edit': { admin: 1, general_manager: 1, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+      'returns.delete': { admin: 1, general_manager: 1, sales_manager: 0, accounting_manager: 0, import_manager: 0, sales_supervisor: 0, accountant: 0, merchandiser: 0 },
+    };
+    
+    // Insert default permissions for each role (only if they don't exist)
+    for (const [permKey, roleSettings] of Object.entries(permissions)) {
+      for (const [role, allowed] of Object.entries(roleSettings)) {
+        try {
+          await this.execute(
+            `INSERT INTO role_permissions (role, permission_key, allowed) 
+             VALUES ($1, $2, $3) 
+             ON CONFLICT (role, permission_key) DO NOTHING`,
+            [role, permKey, allowed]
+          );
+        } catch (err) {
+          // Ignore duplicate key errors
+        }
+      }
+    }
   }
 
   async initializeSuperAdmin() {
@@ -366,7 +518,8 @@ class Database {
         if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === '57P03' || error.code === 'ECONNRESET') {
           retries--;
           if (retries > 0) {
-            console.log(`Query failed with connection error ${error.code}, retrying... (${retries} attempts left)`);<br/>            await new Promise(resolve => setTimeout(resolve, 500));
+            console.log(`Query failed with connection error ${error.code}, retrying... (${retries} attempts left)`);
+            await new Promise(resolve => setTimeout(resolve, 500));
           }
         } else {
           // Non-connection error, throw immediately
@@ -616,14 +769,20 @@ class Database {
   async addSnapshot(data, userId = null) {
     await this.initialize();
     
+    console.log(`[addSnapshot] Called with userId=${userId}, store_id=${data.store_id}, product_id=${data.product_id}, date=${data.date}`);
+    
     // Check if snapshot already exists for this store/product/date
     const existing = await this.query(
       'SELECT id FROM stock_snapshot WHERE store_id = $1 AND product_id = $2 AND date = $3',
       [data.store_id, data.product_id, data.date]
     );
     
+    let snapshotId = null;
+    
     if (existing.length > 0) {
       // Update existing snapshot (overwrite)
+      snapshotId = existing[0].id;
+      console.log(`[addSnapshot] Updating existing snapshot ID=${snapshotId}`);
       await this.execute(
         `UPDATE stock_snapshot 
          SET qty = $1, expiry_date = $2, price = $3, competitor_prices = $4, note = $5, user_id = $6
@@ -632,10 +791,99 @@ class Database {
       );
     } else {
       // Insert new snapshot
-      await this.execute(
-        'INSERT INTO stock_snapshot (store_id, product_id, date, qty, expiry_date, price, competitor_prices, note, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+      console.log(`[addSnapshot] Inserting new snapshot`);
+      const result = await this.query(
+        'INSERT INTO stock_snapshot (store_id, product_id, date, qty, expiry_date, price, competitor_prices, note, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id',
         [data.store_id, data.product_id, data.date, data.qty || 0, data.expiry_date || null, data.price || 0, data.competitor_prices || null, data.note || null, userId]
       );
+      snapshotId = result.length > 0 ? result[0].id : null;
+      console.log(`[addSnapshot] New snapshot created with ID=${snapshotId}`);
+    }
+    
+    // After snapshot is created/updated, check if there's a scheduled route and mark related tasks
+    if (userId) {
+      try {
+        console.log(`[addSnapshot] Checking for scheduled routes for userId=${userId}, store_id=${data.store_id}`);
+        
+        // Find route schedules for this user and store
+        const routes = await this.query(
+          'SELECT id, user_id FROM route_schedules WHERE user_id = $1 AND store_id = $2',
+          [userId, data.store_id]
+        );
+        
+        console.log(`[addSnapshot] Found ${routes.length} route schedules`);
+        
+        if (routes.length > 0) {
+          console.log(`[addSnapshot] Found ${routes.length} scheduled routes for user ${userId}, store ${data.store_id}`);
+          
+          // Mark visit_logs as completed for route schedules (used by mobile app's /api/route-schedules/my)
+          for (const route of routes) {
+            console.log(`[addSnapshot] Processing visit_log for route_schedule_id=${route.id}, visit_date=${data.date}`);
+            
+            // Check if visit_log exists for this route/date
+            const existingLog = await this.query(
+              'SELECT id, is_completed FROM visit_logs WHERE route_schedule_id = $1 AND visit_date = $2',
+              [route.id, data.date]
+            );
+            
+            if (existingLog.length === 0) {
+              // Insert new visit_log as completed
+              await this.execute(
+                `INSERT INTO visit_logs (route_schedule_id, store_id, user_id, visit_date, is_completed, completed_at)
+                 VALUES ($1, $2, $3, $4, 1, CURRENT_TIMESTAMP)`,
+                [route.id, data.store_id, userId, data.date]
+              );
+              console.log(`[addSnapshot] Created visit_log for route_schedule_id=${route.id}`);
+            } else if (existingLog[0].is_completed !== 1) {
+              // Update existing visit_log to completed
+              await this.execute(
+                'UPDATE visit_logs SET is_completed = 1, completed_at = CURRENT_TIMESTAMP WHERE id = $1',
+                [existingLog[0].id]
+              );
+              console.log(`[addSnapshot] Updated visit_log ID=${existingLog[0].id} to completed`);
+            }
+          }
+          
+          // Find any route_tasks related to this route schedule on this date and mark them complete
+          for (const route of routes) {
+            console.log(`[addSnapshot] Checking route_tasks for route_schedule_id=${route.id}, scheduled_date=${data.date}`);
+            
+            const routeTasks = await this.query(
+              `SELECT id, task_id FROM route_tasks 
+               WHERE route_schedule_id = $1 AND scheduled_date = $2 AND user_id = $3`,
+              [route.id, data.date, userId]
+            );
+            
+            console.log(`[addSnapshot] Found ${routeTasks.length} route tasks for this visit`);
+            
+            if (routeTasks.length > 0) {
+              console.log(`[addSnapshot] Found ${routeTasks.length} route tasks for this visit, marking as completed`);
+              
+              for (const routeTask of routeTasks) {
+                console.log(`[addSnapshot] Marking route_task ID=${routeTask.id} as completed with snapshot_id=${snapshotId}`);
+                
+                // Mark the route_task as completed
+                await this.execute(
+                  'UPDATE route_tasks SET is_completed = $1, completed_by_snapshot_id = $2 WHERE id = $3',
+                  [1, snapshotId, routeTask.id]
+                );
+                
+                // Also mark the related task as completed
+                if (routeTask.task_id) {
+                  console.log(`[addSnapshot] Marking task ID=${routeTask.task_id} as completed`);
+                  await this.execute(
+                    'UPDATE tasks SET status = $1, completed_at = NOW() WHERE id = $2',
+                    ['completed', routeTask.task_id]
+                  );
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[addSnapshot] Error processing route tasks:', err.message);
+        // Don't fail snapshot creation if task update fails
+      }
     }
     
     return { success: true };
@@ -802,6 +1050,56 @@ class Database {
 
     sql += ' ORDER BY d.date DESC, d.id DESC';
     return this.query(sql, params);
+  }
+
+  // ========== SALES RETURNS ==========
+  async addReturn(data) {
+    await this.initialize();
+    await this.execute(
+      'INSERT INTO sales_returns (store_id, product_id, date, qty, note, user_id) VALUES ($1, $2, $3, $4, $5, $6)',
+      [data.store_id, data.product_id, data.date, data.qty || 0, data.note || null, data.user_id || null]
+    );
+    return { success: true };
+  }
+
+  async getReturnsAll(storeId = null, productId = null, startDate = null, endDate = null) {
+    await this.initialize();
+    let sql = `
+      SELECT r.*, p.name as product_name, st.name as store_name, u.full_name as user_name
+      FROM sales_returns r
+      JOIN products p ON p.id = r.product_id
+      JOIN stores st ON st.id = r.store_id
+      LEFT JOIN users u ON u.id = r.user_id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramIndex = 1;
+
+    if (storeId) {
+      sql += ` AND r.store_id = $${paramIndex++}`;
+      params.push(storeId);
+    }
+    if (productId) {
+      sql += ` AND r.product_id = $${paramIndex++}`;
+      params.push(productId);
+    }
+    if (startDate) {
+      sql += ` AND r.date >= $${paramIndex++}`;
+      params.push(startDate);
+    }
+    if (endDate) {
+      sql += ` AND r.date <= $${paramIndex++}`;
+      params.push(endDate);
+    }
+
+    sql += ' ORDER BY r.date DESC, r.id DESC';
+    return this.query(sql, params);
+  }
+
+  async deleteReturn(id) {
+    await this.initialize();
+    await this.execute('DELETE FROM sales_returns WHERE id = $1', [id]);
+    return { success: true };
   }
 
   // ========== TURNOVER CALCULATIONS ==========
@@ -1809,30 +2107,32 @@ class Database {
     console.log(`[getRouteSchedules] Called with userId=${userId}`);
     
     // Use local date formatting to avoid timezone issues
-    // Format a date as YYYY-MM-DD string
-    const formatDate = (d) => {
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
+    // Format a date as YYYY-MM-DD string (Cairo timezone)
+    const formatDateCairo = (d) => {
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
       return `${year}-${month}-${day}`;
     };
     
-    // Get today in local time
-    const today = new Date();
-    const todayStr = formatDate(today);
-    console.log(`[getRouteSchedules] Today is ${todayStr}, server time:`, today.toISOString());
+    // Get today in Cairo timezone (UTC+2)
+    const cairoOffset = 2 * 60 * 60 * 1000;
+    const nowUTC = new Date();
+    const nowCairo = new Date(nowUTC.getTime() + cairoOffset);
+    const todayStr = formatDateCairo(nowCairo);
+    console.log(`[getRouteSchedules] Today in Cairo is ${todayStr}, UTC time:`, nowUTC.toISOString());
     
-    // Create a 7-day rolling window starting from today
+    // Create a 7-day rolling window starting from today (Cairo time)
     const dayDates = [];
     for (let i = 0; i < 7; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() + i);
+      const d = new Date(nowCairo);
+      d.setUTCDate(nowCairo.getUTCDate() + i);
       dayDates.push({
-        date: formatDate(d),
-        dayOfWeek: d.getDay()
+        date: formatDateCairo(d),
+        dayOfWeek: d.getUTCDay()
       });
     }
-    console.log(`[getRouteSchedules] 7-day window:`, dayDates.map(d => `${d.date}(day${d.dayOfWeek})`).join(', '));
+    console.log(`[getRouteSchedules] 7-day window (Cairo TZ):`, dayDates.map(d => `${d.date}(day${d.dayOfWeek})`).join(', '));
     
     let sql = `
       SELECT rs.*, u.full_name as user_name, u.username, s.name as store_name, s.code as store_code,
@@ -1873,41 +2173,77 @@ class Database {
       return [];
     }
     
-    // Get all visit logs in ONE query
-    const scheduleIds = schedules.map(s => s.id);
+    // Get all snapshots for scheduled stores on scheduled dates
+    const storeIds = schedules.map(s => s.store_id);
     const visitDates = dayDates.map(d => d.date);
     
-    const visitLogs = await this.query(`
-      SELECT route_schedule_id, visit_date, id, is_completed, completed_at
-      FROM visit_logs
-      WHERE route_schedule_id = ANY($1)
-        AND visit_date = ANY($2)
-    `, [scheduleIds, visitDates]);
+    console.log(`[getRouteSchedules] storeIds:`, storeIds, 'visitDates:', visitDates);
     
-    console.log(`[getRouteSchedules] Found ${visitLogs.length} visit logs`);
+    // Check for snapshots by store_id and date - if a snapshot exists for a store on a date, mark as completed
+    const snapshots = await this.query(`
+      SELECT DISTINCT store_id, date
+      FROM stock_snapshot
+      WHERE store_id = ANY($1)
+        AND date = ANY($2)
+    `, [storeIds, visitDates]);
     
-    // Create lookup map: "scheduleId_visitDate" -> visit log
-    const visitLogMap = {};
-    visitLogs.forEach(vl => {
-      const key = `${vl.route_schedule_id}_${vl.visit_date}`;
-      visitLogMap[key] = vl;
+    console.log(`[getRouteSchedules] Found ${snapshots.length} snapshots for scheduled stores/dates`);
+    if (snapshots.length > 0) {
+      console.log(`[getRouteSchedules] Snapshots:`, snapshots.map(s => ({ 
+        store_id: s.store_id, 
+        date: s.date,
+        dateType: typeof s.date,
+        dateConstructor: s.date?.constructor?.name
+      })));
+    }
+    
+    // Create lookup map: "storeId_visitDate" -> snapshot exists
+    const snapshotMap = {};
+    snapshots.forEach((snapshot, idx) => {
+      // Convert date to YYYY-MM-DD format properly
+      let dateStr;
+      if (snapshot.date instanceof Date) {
+        // If it's a Date object, format it as YYYY-MM-DD
+        const d = snapshot.date;
+        dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        console.log(`[getRouteSchedules] Converted Date object to: ${dateStr}`);
+      } else {
+        // If it's a string, try to extract YYYY-MM-DD using regex
+        const dateString = String(snapshot.date);
+        const dateMatch = dateString.match(/(\d{4})-(\d{2})-(\d{2})/);
+        if (dateMatch) {
+          dateStr = dateMatch[0];
+          console.log(`[getRouteSchedules] Extracted date from '${dateString}': ${dateStr}`);
+        } else {
+          // Try ISO format fallback
+          dateStr = dateString.substring(0, 10);
+          console.log(`[getRouteSchedules] Could not extract with regex, used substring: ${dateStr}`);
+        }
+      }
+      
+      const key = `${snapshot.store_id}_${dateStr}`;
+      snapshotMap[key] = true;
+      console.log(`[getRouteSchedules] snapshotMap[${key}] = true`);
     });
+    
+    console.log(`[getRouteSchedules] Final snapshotMap keys:`, Object.keys(snapshotMap));
     
     // Build result with rolling 7-day window
     const result = [];
     for (const dayInfo of dayDates) {
       const matchingSchedules = schedules.filter(s => s.day_of_week === dayInfo.dayOfWeek);
+      console.log(`[getRouteSchedules] Day ${dayInfo.date} (dayOfWeek=${dayInfo.dayOfWeek}): Found ${matchingSchedules.length} matching schedules`);
       
       for (const schedule of matchingSchedules) {
-        const key = `${schedule.id}_${dayInfo.date}`;
-        const visitLog = visitLogMap[key];
+        const key = `${schedule.store_id}_${dayInfo.date}`;
+        const hasSnapshot = snapshotMap[key] || false;
+        
+        console.log(`[getRouteSchedules] Building result: store_id=${schedule.store_id}, visit_date=${dayInfo.date}, key=${key}, hasSnapshot=${hasSnapshot}, snapshotMapKeys=${Object.keys(snapshotMap)}`);
         
         result.push({
           ...schedule,
-          visit_log_id: visitLog?.id || null,
-          is_completed: visitLog?.is_completed || 0,
-          visit_date: dayInfo.date,
-          completed_at: visitLog?.completed_at || null
+          is_completed: hasSnapshot ? 1 : 0,
+          visit_date: dayInfo.date
         });
       }
     }
@@ -1966,25 +2302,27 @@ class Database {
   async getUserWeeklyScheduleWithVisits(userId) {
     await this.initialize();
     
-    // Use local date formatting to avoid timezone issues
-    const formatDate = (d) => {
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
+    // Use Cairo timezone (UTC+2)
+    const formatDateCairo = (d) => {
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
       return `${year}-${month}-${day}`;
     };
     
-    // Get today in local time
-    const today = new Date();
+    // Get today in Cairo timezone
+    const cairoOffset = 2 * 60 * 60 * 1000;
+    const nowUTC = new Date();
+    const nowCairo = new Date(nowUTC.getTime() + cairoOffset);
     
-    // Create a 7-day rolling window starting from today
+    // Create a 7-day rolling window starting from today (Cairo time)
     const dayDates = [];
     for (let i = 0; i < 7; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() + i);
+      const d = new Date(nowCairo);
+      d.setUTCDate(nowCairo.getUTCDate() + i);
       dayDates.push({
-        date: formatDate(d),
-        dayOfWeek: d.getDay()
+        date: formatDateCairo(d),
+        dayOfWeek: d.getUTCDay()
       });
     }
     
@@ -2015,7 +2353,17 @@ class Database {
     // Create a lookup map for O(1) access: "scheduleId_date" -> visit log
     const visitLogMap = {};
     visitLogs.forEach(vl => {
-      const key = `${vl.route_schedule_id}_${vl.visit_date}`;
+      // Convert visit_date to YYYY-MM-DD format properly
+      let dateStr;
+      if (vl.visit_date instanceof Date) {
+        const d = vl.visit_date;
+        dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      } else {
+        const dateString = String(vl.visit_date);
+        const dateMatch = dateString.match(/(\d{4})-(\d{2})-(\d{2})/);
+        dateStr = dateMatch ? dateMatch[0] : dateString.substring(0, 10);
+      }
+      const key = `${vl.route_schedule_id}_${dateStr}`;
       visitLogMap[key] = vl;
     });
     
@@ -2084,9 +2432,11 @@ class Database {
     await this.initialize();
     
     // Parse the date correctly - visitDate is in YYYY-MM-DD format
-    // Create date at noon to avoid timezone issues
-    const dateObj = new Date(visitDate + 'T12:00:00');
-    const dayOfWeek = dateObj.getDay();
+    // Calculate day of week using Cairo timezone (UTC+2)
+    const cairoOffset = 2 * 60 * 60 * 1000; // UTC+2
+    const dateObj = new Date(visitDate + 'T12:00:00Z');
+    const dateInCairo = new Date(dateObj.getTime() + cairoOffset);
+    const dayOfWeek = dateInCairo.getUTCDay();
     
     console.log(`[Route Mark] Looking for schedule: userId=${userId}, storeId=${storeId}, visitDate=${visitDate}, dayOfWeek=${dayOfWeek}`);
     
@@ -2140,10 +2490,12 @@ class Database {
     
     console.log(`[getMonthlyVisitCount] User ${userId}: Month range ${monthStart} to ${monthEnd}`);
     
+    // Count snapshots only for stores that are scheduled for this user
     const result = await this.query(`
-      SELECT COUNT(*) as count
-      FROM visit_logs
-      WHERE user_id = $1 AND is_completed = 1 AND visit_date >= $2 AND visit_date <= $3
+      SELECT COUNT(DISTINCT ss.store_id || '_' || ss.date) as count
+      FROM stock_snapshot ss
+      INNER JOIN route_schedules rs ON ss.store_id = rs.store_id
+      WHERE rs.user_id = $1 AND ss.date >= $2 AND ss.date <= $3 AND ss.user_id = $1
     `, [userId, monthStart, monthEnd]);
     
     const count = parseInt(result[0]?.count) || 0;
@@ -2481,6 +2833,411 @@ class Database {
       console.error('getDeliveriesReport error:', error);
       return [];
     }
+  }
+
+  // ========== PERMISSION MANAGEMENT ==========
+  
+  // Get all permissions for a specific user (combines role defaults with user overrides)
+  async getUserPermissions(userId) {
+    await this.initialize();
+    
+    // Get user's role
+    const userResult = await this.query('SELECT role FROM users WHERE id = $1', [userId]);
+    if (userResult.length === 0) {
+      return {};
+    }
+    const userRole = userResult[0].role;
+    
+    // Get role default permissions
+    const rolePerms = await this.query(
+      'SELECT permission_key, allowed FROM role_permissions WHERE role = $1',
+      [userRole]
+    );
+    
+    // Get user-specific overrides
+    const userPerms = await this.query(
+      'SELECT permission_key, allowed FROM user_permissions WHERE user_id = $1',
+      [userId]
+    );
+    
+    // Merge: start with role defaults, then apply user overrides
+    const permissions = {};
+    rolePerms.forEach(p => {
+      permissions[p.permission_key] = p.allowed === 1;
+    });
+    userPerms.forEach(p => {
+      permissions[p.permission_key] = p.allowed === 1;
+    });
+    
+    return permissions;
+  }
+  
+  // Check if user has a specific permission
+  async hasPermission(userId, permissionKey) {
+    const permissions = await this.getUserPermissions(userId);
+    return permissions[permissionKey] === true;
+  }
+  
+  // Get all role permissions (for admin view)
+  async getAllRolePermissions() {
+    await this.initialize();
+    const result = await this.query(
+      'SELECT role, permission_key, allowed FROM role_permissions ORDER BY role, permission_key'
+    );
+    
+    // Group by role
+    const grouped = {};
+    result.forEach(r => {
+      if (!grouped[r.role]) grouped[r.role] = {};
+      grouped[r.role][r.permission_key] = r.allowed === 1;
+    });
+    return grouped;
+  }
+  
+  // Update a role's permission
+  async updateRolePermission(role, permissionKey, allowed) {
+    await this.initialize();
+    await this.execute(
+      `INSERT INTO role_permissions (role, permission_key, allowed) 
+       VALUES ($1, $2, $3) 
+       ON CONFLICT (role, permission_key) 
+       DO UPDATE SET allowed = $3`,
+      [role, permissionKey, allowed ? 1 : 0]
+    );
+    return { success: true };
+  }
+  
+  // Get user-specific permission overrides
+  async getUserPermissionOverrides(userId) {
+    await this.initialize();
+    const result = await this.query(
+      'SELECT permission_key, allowed FROM user_permissions WHERE user_id = $1',
+      [userId]
+    );
+    const overrides = {};
+    result.forEach(r => {
+      overrides[r.permission_key] = r.allowed === 1;
+    });
+    return overrides;
+  }
+  
+  // Set user-specific permission override
+  async setUserPermissionOverride(userId, permissionKey, allowed) {
+    await this.initialize();
+    if (allowed === null) {
+      // Remove override (use role default)
+      await this.execute(
+        'DELETE FROM user_permissions WHERE user_id = $1 AND permission_key = $2',
+        [userId, permissionKey]
+      );
+    } else {
+      await this.execute(
+        `INSERT INTO user_permissions (user_id, permission_key, allowed, updated_at) 
+         VALUES ($1, $2, $3, CURRENT_TIMESTAMP) 
+         ON CONFLICT (user_id, permission_key) 
+         DO UPDATE SET allowed = $3, updated_at = CURRENT_TIMESTAMP`,
+        [userId, permissionKey, allowed ? 1 : 0]
+      );
+    }
+    return { success: true };
+  }
+  
+  // Get all permission keys (for UI)
+  async getAllPermissionKeys() {
+    await this.initialize();
+    const result = await this.query(
+      'SELECT DISTINCT permission_key FROM role_permissions ORDER BY permission_key'
+    );
+    return result.map(r => r.permission_key);
+  }
+
+  // ========== INVENTORY MANAGEMENT ==========
+  
+  // Get current inventory stock levels
+  async getInventoryStock() {
+    await this.initialize();
+    return this.query(`
+      SELECT 
+        ist.id,
+        ist.product_id,
+        p.name as product_name,
+        p.unit,
+        p.unit_price,
+        b.name as brand_name,
+        ist.current_quantity,
+        ist.last_in_date,
+        ist.last_out_date,
+        ist.updated_at
+      FROM inventory_stock ist
+      JOIN products p ON p.id = ist.product_id
+      LEFT JOIN brands b ON b.id = p.brand_id
+      ORDER BY p.name
+    `);
+  }
+  
+  // Get inventory transactions with filters
+  async getInventoryTransactions(filters = {}) {
+    await this.initialize();
+    
+    let sql = `
+      SELECT 
+        it.*,
+        p.name as product_name,
+        p.unit,
+        b.name as brand_name,
+        s.name as store_name,
+        u.full_name as created_by_name,
+        u.username as created_by_username,
+        au.full_name as approved_by_name
+      FROM inventory_transactions it
+      JOIN products p ON p.id = it.product_id
+      LEFT JOIN brands b ON b.id = p.brand_id
+      LEFT JOIN stores s ON s.id = it.store_id
+      JOIN users u ON u.id = it.created_by
+      LEFT JOIN users au ON au.id = it.approved_by
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramIndex = 1;
+    
+    if (filters.transaction_type) {
+      sql += ` AND it.transaction_type = $${paramIndex++}`;
+      params.push(filters.transaction_type);
+    }
+    if (filters.product_id) {
+      sql += ` AND it.product_id = $${paramIndex++}`;
+      params.push(filters.product_id);
+    }
+    if (filters.store_id) {
+      sql += ` AND it.store_id = $${paramIndex++}`;
+      params.push(filters.store_id);
+    }
+    if (filters.start_date) {
+      sql += ` AND it.transaction_date >= $${paramIndex++}`;
+      params.push(filters.start_date);
+    }
+    if (filters.end_date) {
+      sql += ` AND it.transaction_date <= $${paramIndex++}`;
+      params.push(filters.end_date);
+    }
+    if (filters.status) {
+      sql += ` AND it.status = $${paramIndex++}`;
+      params.push(filters.status);
+    }
+    
+    sql += ' ORDER BY it.transaction_date DESC, it.created_at DESC';
+    
+    if (filters.limit) {
+      sql += ` LIMIT $${paramIndex++}`;
+      params.push(filters.limit);
+    }
+    
+    return this.query(sql, params);
+  }
+  
+  // Create inventory transaction (in or out)
+  async createInventoryTransaction(data, userId) {
+    await this.initialize();
+    
+    let actualQuantity = parseFloat(data.quantity) || 0;
+    
+    // For "out" transactions, reject if exceeds available stock
+    if (data.transaction_type === 'out') {
+      const stockResult = await this.query(
+        `SELECT s.current_quantity, p.name as product_name 
+         FROM inventory_stock s 
+         JOIN products p ON p.id = s.product_id 
+         WHERE s.product_id = $1`,
+        [data.product_id]
+      );
+      const currentStock = stockResult.length > 0 ? parseFloat(stockResult[0].current_quantity) : 0;
+      const productName = stockResult.length > 0 ? stockResult[0].product_name : '';
+      
+      // Reject if requested quantity exceeds available stock
+      if (actualQuantity > currentStock) {
+        return { success: false, error: 'لا يوجد رصيد كافٍ للإخراج', product_name: productName };
+      }
+    }
+    
+    const totalCost = actualQuantity * (parseFloat(data.unit_cost) || 0);
+    
+    const result = await this.query(
+      `INSERT INTO inventory_transactions 
+       (transaction_type, product_id, quantity, unit_cost, total_cost, reference_number, 
+        supplier_name, store_id, note, transaction_date, created_by, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING id`,
+      [
+        data.transaction_type,
+        data.product_id,
+        actualQuantity,
+        parseFloat(data.unit_cost) || 0,
+        totalCost,
+        data.reference_number || null,
+        data.supplier_name || null,
+        data.store_id || null,
+        data.note || null,
+        data.transaction_date,
+        userId,
+        data.status || 'approved'
+      ]
+    );
+    
+    const transactionId = result[0].id;
+    
+    // Update inventory stock
+    await this.updateInventoryStock(data.product_id, data.transaction_type, actualQuantity);
+    
+    return { success: true, id: transactionId, actualQuantity };
+  }
+  
+  // Update inventory stock based on transaction
+  async updateInventoryStock(productId, transactionType, quantity) {
+    await this.initialize();
+    
+    const qtyChange = transactionType === 'in' ? parseFloat(quantity) : -parseFloat(quantity);
+    const dateField = transactionType === 'in' ? 'last_in_date' : 'last_out_date';
+    
+    // Check if stock record exists
+    const existing = await this.query(
+      'SELECT id, current_quantity FROM inventory_stock WHERE product_id = $1',
+      [productId]
+    );
+    
+    if (existing.length === 0) {
+      // Create new stock record - only for 'in' transactions since 'out' should be capped already
+      const newQty = Math.max(0, qtyChange);
+      await this.execute(
+        `INSERT INTO inventory_stock (product_id, current_quantity, ${dateField}, updated_at)
+         VALUES ($1, $2, CURRENT_DATE, CURRENT_TIMESTAMP)`,
+        [productId, newQty]
+      );
+    } else {
+      // Update existing - cap at 0 to prevent negative stock from edge cases
+      const newQty = Math.max(0, parseFloat(existing[0].current_quantity) + qtyChange);
+      await this.execute(
+        `UPDATE inventory_stock 
+         SET current_quantity = $1, ${dateField} = CURRENT_DATE, updated_at = CURRENT_TIMESTAMP 
+         WHERE product_id = $2`,
+        [newQty, productId]
+      );
+    }
+  }
+  
+  // Delete inventory transaction
+  async deleteInventoryTransaction(transactionId, userId) {
+    await this.initialize();
+    
+    // Get transaction details first
+    const transaction = await this.query(
+      'SELECT * FROM inventory_transactions WHERE id = $1',
+      [transactionId]
+    );
+    
+    if (transaction.length === 0) {
+      return { success: false, error: 'Transaction not found' };
+    }
+    
+    const tx = transaction[0];
+    
+    // Reverse the stock change
+    const reverseType = tx.transaction_type === 'in' ? 'out' : 'in';
+    await this.updateInventoryStock(tx.product_id, reverseType, tx.quantity);
+    
+    // Delete the transaction
+    await this.execute('DELETE FROM inventory_transactions WHERE id = $1', [transactionId]);
+    
+    return { success: true };
+  }
+  
+  // Get inventory transaction by ID
+  async getInventoryTransactionById(id) {
+    await this.initialize();
+    const result = await this.query(`
+      SELECT 
+        it.*,
+        p.name as product_name,
+        p.unit,
+        b.name as brand_name,
+        s.name as store_name,
+        u.full_name as created_by_name,
+        au.full_name as approved_by_name
+      FROM inventory_transactions it
+      JOIN products p ON p.id = it.product_id
+      LEFT JOIN brands b ON b.id = p.brand_id
+      LEFT JOIN stores s ON s.id = it.store_id
+      JOIN users u ON u.id = it.created_by
+      LEFT JOIN users au ON au.id = it.approved_by
+      WHERE it.id = $1
+    `, [id]);
+    return result[0] || null;
+  }
+  
+  // Approve inventory transaction
+  async approveInventoryTransaction(transactionId, userId) {
+    await this.initialize();
+    await this.execute(
+      `UPDATE inventory_transactions 
+       SET status = 'approved', approved_by = $1, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [userId, transactionId]
+    );
+    return { success: true };
+  }
+  
+  // Cancel inventory transaction
+  async cancelInventoryTransaction(transactionId, userId) {
+    await this.initialize();
+    
+    // Get transaction details
+    const transaction = await this.query(
+      'SELECT * FROM inventory_transactions WHERE id = $1',
+      [transactionId]
+    );
+    
+    if (transaction.length === 0) {
+      return { success: false, error: 'Transaction not found' };
+    }
+    
+    const tx = transaction[0];
+    
+    // If it was approved, reverse the stock change
+    if (tx.status === 'approved') {
+      const reverseType = tx.transaction_type === 'in' ? 'out' : 'in';
+      await this.updateInventoryStock(tx.product_id, reverseType, tx.quantity);
+    }
+    
+    await this.execute(
+      `UPDATE inventory_transactions 
+       SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $1`,
+      [transactionId]
+    );
+    
+    return { success: true };
+  }
+  
+  // Get inventory summary report
+  async getInventorySummary(startDate, endDate) {
+    await this.initialize();
+    
+    return this.query(`
+      SELECT 
+        p.id as product_id,
+        p.name as product_name,
+        b.name as brand_name,
+        COALESCE(ist.current_quantity, 0) as current_stock,
+        COALESCE(SUM(CASE WHEN it.transaction_type = 'in' AND it.transaction_date >= $1 AND it.transaction_date <= $2 THEN it.quantity ELSE 0 END), 0) as total_in,
+        COALESCE(SUM(CASE WHEN it.transaction_type = 'out' AND it.transaction_date >= $1 AND it.transaction_date <= $2 THEN it.quantity ELSE 0 END), 0) as total_out,
+        COALESCE(SUM(CASE WHEN it.transaction_type = 'in' AND it.transaction_date >= $1 AND it.transaction_date <= $2 THEN it.total_cost ELSE 0 END), 0) as total_in_cost,
+        COALESCE(SUM(CASE WHEN it.transaction_type = 'out' AND it.transaction_date >= $1 AND it.transaction_date <= $2 THEN it.total_cost ELSE 0 END), 0) as total_out_cost
+      FROM products p
+      LEFT JOIN brands b ON b.id = p.brand_id
+      LEFT JOIN inventory_stock ist ON ist.product_id = p.id
+      LEFT JOIN inventory_transactions it ON it.product_id = p.id AND it.status = 'approved'
+      GROUP BY p.id, p.name, b.name, ist.current_quantity
+      ORDER BY p.name
+    `, [startDate, endDate]);
   }
 
   // Graceful shutdown
